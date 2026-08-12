@@ -1,4 +1,3 @@
-
 from datetime import datetime
 import os
 from zoneinfo import ZoneInfo
@@ -172,7 +171,7 @@ refresh_interval = (
     st.sidebar.slider("Auto Scan Frequency (Seconds)", 5, 60, 10) * 1000
 )
 
-# Trigger Automatic Background Refresh Every N seconds
+# Trigger Automatic Background Refresh
 if auto_scan:
     st_autorefresh(interval=refresh_interval, key="live_market_auto_scanner")
 
@@ -278,19 +277,25 @@ st.session_state["live_signals"] = current_signals
 # --- DISPLAY DASHBOARD ---
 signals_to_display = st.session_state["live_signals"]
 
-# Performance Summary
-st.subheader("📊 Today's Real-Time Performance Summary")
-col1, col2, col3, col4 = st.columns(4)
-
 total_count = len(signals_to_display)
-wins = sum(1 for item in signals_to_display if "TARGET HIT" in item["Status"])
+wins = sum(
+    1 for item in signals_to_display if "TARGET HIT" in item["Status"]
+)
 losses = sum(1 for item in signals_to_display if "SL HIT" in item["Status"])
 net_pl = sum(item["Live P&L (Pts)"] for item in signals_to_display)
 
-col1.metric("Total Signals Generated", total_count)
-col2.metric("Targets Hit (Wins)", wins)
-col3.metric("SL Hit (Losses)", losses)
-col4.metric("Total Net P&L (Points)", f"{net_pl:+.2f}")
+# SINGLE-LINE P&L SUMMARY DISPLAY
+st.markdown(
+    f"""
+    <div style="background-color:#0f172a; padding:12px; border-radius:8px; border:1px solid #334155; font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom: 15px;">
+        📊 Trades: <span style="color:#38bdf8;">{total_count}</span> | 
+        Targets: <span style="color:#22c55e;">{wins}</span> | 
+        SL: <span style="color:#ef4444;">{losses}</span> | 
+        Overall P&L: <span style="color:{'#22c55e' if net_pl >= 0 else '#ef4444'};">{net_pl:+.2f} Pts</span>
+    </div>
+""",
+    unsafe_allow_html=True,
+)
 
 st.divider()
 
@@ -300,4 +305,6 @@ if signals_to_display:
     df_display = pd.DataFrame(signals_to_display)
     st.dataframe(df_display, use_container_width=True)
 else:
-    st.info("Continuous Scanning Running... Abhi tak koi valid pattern breakout nahi hua hai.")
+    st.info(
+        "Continuous Scanning Running... Abhi tak koi valid pattern breakout nahi hua hai."
+    )
