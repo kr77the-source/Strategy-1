@@ -7,7 +7,7 @@ import yfinance as yf
 from zoneinfo import ZoneInfo
 
 # -----------------------------------------------------------------------------
-# PAGE CONFIG & CSS
+# PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Live Auto-Scanning Engine & Performance Tracker", layout="wide"
@@ -57,9 +57,9 @@ WATCHLIST = [
 ]
 
 # -----------------------------------------------------------------------------
-# CORE SCANNING AND LIVE P&L LOGIC
+# STRICT SINGLE-TRADE ENGINE (HISTORICAL LOCKING)
 # -----------------------------------------------------------------------------
-def scan_and_track_pnl():
+def scan_and_lock_trades():
     all_signals = []
 
     for symbol in WATCHLIST:
@@ -77,10 +77,13 @@ def scan_and_track_pnl():
             volumes = df["Volume"].values
             timestamps = df.index
 
-            # Live price for P&L tracking
-            cmp = round(float(closes[-1]), 2)
+            trade_active = False  # Track if a trade is already running/closed for this stock
 
             for i in range(3, len(df)):
+                # If a trade for this symbol already exists, track its progress till exit
+                if trade_active:
+                    continue
+
                 c1_green, c2_green, c3_green = (
                     closes[i - 3] > opens[i - 3],
                     closes[i - 2] > opens[i - 2],
@@ -102,7 +105,7 @@ def scan_and_track_pnl():
                 )
                 signal_time = timestamps[i].strftime("%H:%M")
 
-                # BUY Trade Setup
+                # BUY TRIGGER
                 if (
                     c1_green
                     and c2_green
@@ -115,16 +118,22 @@ def scan_and_track_pnl():
                     risk = entry - sl
                     target = round(entry + (risk * 2), 2)
 
-                    # Track Live Status & P&L
-                    if cmp >= target:
-                        status = "TARGET 🟢"
-                        pnl = round(target - entry, 2)
-                    elif cmp <= sl:
-                        status = "SL HIT 🔴"
-                        pnl = round(sl - entry, 2)
-                    else:
-                        status = "LIVE 🟡"
-                        pnl = round(cmp - entry, 2)
+                    # Check future candles after signal to lock SL/Target History
+                    final_status = "LIVE 🟡"
+                    final_pnl = round(closes[-1] - entry, 2)
+                    
+                    for j in range(i + 1, len(df)):
+                        future_high = highs[j]
+                        future_low = lows[j]
+
+                        if future_low <= sl:
+                            final_status = "SL HIT 🔴"
+                            final_pnl = round(sl - entry, 2)
+                            break
+                        elif future_high >= target:
+                            final_status = "TARGET 🟢"
+                            final_pnl = round(target - entry, 2)
+                            break
 
                     all_signals.append({
                         "Time": signal_time,
@@ -133,12 +142,14 @@ def scan_and_track_pnl():
                         "Entry Trigger": entry,
                         "Stop Loss (SL)": sl,
                         "Target (Exit)": target,
-                        "CMP": cmp,
-                        "Status": status,
-                        "P&L Pts": pnl
+                        "CMP": round(float(closes[-1]), 2),
+                        "Status": final_status,
+                        "P&L Pts": final_pnl
                     })
+                    
+                    trade_active = True  # Lock this symbol (No re-triggering allowed)
 
-                # SELL Trade Setup
+                # SELL TRIGGER
                 elif (
                     c1_red
                     and c2_red
@@ -151,16 +162,21 @@ def scan_and_track_pnl():
                     risk = sl - entry
                     target = round(entry - (risk * 2), 2)
 
-                    # Track Live Status & P&L
-                    if cmp <= target:
-                        status = "TARGET 🟢"
-                        pnl = round(entry - target, 2)
-                    elif cmp >= sl:
-                        status = "SL HIT 🔴"
-                        pnl = round(entry - sl, 2)
-                    else:
-                        status = "LIVE 🟡"
-                        pnl = round(entry - cmp, 2)
+                    final_status = "LIVE 🟡"
+                    final_pnl = round(entry - closes[-1], 2)
+
+                    for j in range(i + 1, len(df)):
+                        future_high = highs[j]
+                        future_low = lows[j]
+
+                        if future_high >= sl:
+                            final_status = "SL HIT 🔴"
+                            final_pnl = round(entry - sl, 2)
+                            break
+                        elif future_low <= target:
+                            final_status = "TARGET 🟢"
+                            final_pnl = round(entry - target, 2)
+                            break
 
                     all_signals.append({
                         "Time": signal_time,
@@ -169,10 +185,12 @@ def scan_and_track_pnl():
                         "Entry Trigger": entry,
                         "Stop Loss (SL)": sl,
                         "Target (Exit)": target,
-                        "CMP": cmp,
-                        "Status": status,
-                        "P&L Pts": pnl
+                        "CMP": round(float(closes[-1]), 2),
+                        "Status": final_status,
+                        "P&L Pts": final_pnl
                     })
+
+                    trade_active = True  # Lock this symbol (No re-triggering allowed)
 
         except Exception:
             continue
@@ -182,7 +200,7 @@ def scan_and_track_pnl():
 # -----------------------------------------------------------------------------
 # DISPLAY METRICS & TABLE
 # -----------------------------------------------------------------------------
-df_signals = scan_and_track_pnl()
+df_signals = scan_and_lock_trades()
 
 if not df_signals.empty:
     total_trades = len(df_signals)
@@ -197,7 +215,7 @@ else:
 
 pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
 
-# Top Cards
+# Top Bar Section
 st.markdown(f"""
     <div class="status-card">
         <b>Live Engine Status:</b> 🟢 AUTO SCANNING LIVE | <b>Date:</b> {current_date} | <b>Last Updated (IST):</b> {current_time}
