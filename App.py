@@ -1,332 +1,369 @@
-from datetime import datetime
-import os
-from zoneinfo import ZoneInfo
-import numpy as np
-import pandas as pd
-import streamlit as st
-from streamlit_autorefresh import st_autorefresh
-import yfinance as yf
+from collections import deque
+from datetime import datetime, timedelta
+import math
+import time
+from growwapi import GrowwAPI
 
-# Page Setup
-st.set_page_config(
-    page_title="Live Auto-Scan 3-Candle Pullback Engine", layout="wide"
-)
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+api_key = "YOUR_API_KEY_HERE"
+secret = "YOUR_SECRET_HERE"
 
-# Custom Styling
-st.markdown(
+CAPITAL_PER_TRADE = 50000.0  # ₹50,000 Budget per stock trade
+TIMEFRAME = 5  # 5-Minute Candles (As per Code 1 Pullback Strategy)
+
+# F&O / High Liquidity Stock Symbols for Groww API
+STOCKS = [
+    "NSE_RELIANCE",
+    "NSE_HDFCBANK",
+    "NSE_ICICIBANK",
+    "NSE_INFY",
+    "NSE_TCS",
+    "NSE_SBIN",
+    "NSE_BHARTIARTL",
+    "NSE_TATAMOTORS",
+    "NSE_AXISBANK",
+    "NSE_MARUTI",
+]
+
+stock_data = {}
+
+# Initialize Groww API
+try:
+    access_token = GrowwAPI.get_access_token(api_key=api_key, secret=secret)
+    groww = GrowwAPI(access_token)
+    PRODUCT_TYPE = groww.PRODUCT_MIS  # Intraday Order Type
+    print("✅ Successfully connected to Groww API!")
+except Exception as e:
+    print(f"❌ Groww API Connection Failed: {e}")
+    exit(1)
+
+
+# ==============================================================================
+# DATA PARSING HELPERS
+# ==============================================================================
+def get_historical_data(symbol, days=5):
+    """Fetch 5-minute historical candle data for 3-Candle Pullback Scanner."""
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+    try:
+        data = groww.get_historical_candle_data(
+            trading_symbol=symbol.replace("NSE_", ""),
+            exchange=groww.EXCHANGE_NSE,
+            segment=groww.SEGMENT_CASH,
+            start_time=start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            end_time=end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            interval_in_minutes=TIMEFRAME,
+        )
+        return data
+    except Exception as e:
+        print(f"❌ Error fetching data for {symbol}: {e}")
+        return None
+
+
+def extract_candles(response):
+    if isinstance(response, dict):
+        if "candles" in response:
+            return response["candles"]
+        elif "data" in response:
+            return (
+                response["data"].get("candles", [])
+                if isinstance(response["data"], dict)
+                else response["data"]
+            )
+    elif isinstance(response, list):
+        return response
+    return []
+
+
+def extract_candle_ohlcv(candle):
+    """Parses OHLCV candle structure."""
+    if isinstance(candle, list) and len(candle) >= 6:
+        return (
+            candle[0],
+            float(candle[1]),
+            float(candle[2]),
+            float(candle[3]),
+            float(candle[4]),
+            float(candle[5]),
+        )
+    elif isinstance(candle, dict):
+        return (
+            candle.get("time"),
+            float(candle.get("open", 0)),
+            float(candle.get("high", 0)),
+            float(candle.get("low", 0)),
+            float(candle.get("close", 0)),
+            float(candle.get("volume", 0)),
+        )
+    return None, None, None, None, None, None
+
+
+# ==============================================================================
+# STRATEGY ENGINE (3-CANDLE PULLBACK FROM CODE 1)
+# ==============================================================================
+def analyze_3candle_pullback(processed_candles):
+    """Exact logic from Code 1:
+
+    3 Consecutive Green/Red Candles + Low Volume Pullback Candle.
     """
-    <style>
-    .block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
-    h1 { font-size: 20px !important; margin-bottom: 5px !important; }
-    p, div, span, label { font-size: 13px !important; }
-    .status-card { background-color: #1e293b; padding: 12px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #334155; }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
-
-LOG_FILE = "trades_log.csv"
-CAPITAL_PER_TRADE = 50000.0  # ₹50,000 Fixed Capital Budget
-
-
-# Ensure CSV Persistence
-def init_log_file():
-    if not os.path.exists(LOG_FILE):
-        df = pd.DataFrame(columns=[
-            "Date",
-            "Stock",
-            "Symbol",
-            "Signal",
-            "Entry_Price",
-            "SL",
-            "Target",
-            "Qty",
-            "Status",
-            "Exit_Price",
-            "Points_PL",
-            "Rupee_PL",
-        ])
-        df.to_csv(LOG_FILE, index=False)
-
-
-def load_trade_logs():
-    init_log_file()
-    try:
-        return pd.read_csv(LOG_FILE)
-    except Exception:
-        return pd.DataFrame()
-
-
-def save_trade_logs(df):
-    df.to_csv(LOG_FILE, index=False)
-
-
-# F&O Universe
-STOCKS_DICT = {
-    "Nifty 50 Index": "^NSEI",
-    "Bank Nifty Index": "^NSEBANK",
-    "Reliance": "RELIANCE.NS",
-    "HDFC Bank": "HDFCBANK.NS",
-    "ICICI Bank": "ICICIBANK.NS",
-    "Infosys": "INFY.NS",
-    "TCS": "TCS.NS",
-    "SBI": "SBIN.NS",
-    "Bharti Airtel": "BHARTIARTL.NS",
-    "ITC": "ITC.NS",
-    "L&T": "LT.NS",
-    "Tata Motors": "TATAMOTORS.NS",
-    "Axis Bank": "AXISBANK.NS",
-    "Maruti": "MARUTI.NS",
-    "Sun Pharma": "SUNPHARMA.NS",
-    "Tata Steel": "TATASTEEL.NS",
-    "M&M": "M&M.NS",
-    "HUL": "HINDUNILVR.NS",
-    "Power Grid": "POWERGRID.NS",
-    "NTPC": "NTPC.NS",
-}
-
-
-def fetch_live_5min_data(ticker_symbol):
-    """Fetches real live 5-minute candles."""
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        df = stock.history(period="5d", interval="5m")
-        if df.empty:
-            return None
-
-        ist = ZoneInfo("Asia/Kolkata")
-        df.index = df.index.tz_convert(ist)
-
-        today_date = datetime.now(ist).date()
-        df_today = df[df.index.date == today_date].copy()
-
-        if len(df_today) < 4:
-            last_available_date = df.index.date[-1]
-            df_today = df[df.index.date == last_available_date].copy()
-
-        return df_today
-    except Exception:
+    if len(processed_candles) < 4:
         return None
 
+    c1, c2, c3, curr = (
+        processed_candles[-4],
+        processed_candles[-3],
+        processed_candles[-2],
+        processed_candles[-1],
+    )
 
-def analyze_pullback_strategy(df):
-    """Strategy Engine with SL Buffer & ₹50k Quantity Calculation."""
-    if df is None or len(df) < 4:
-        return None
+    c1_green = c1["close"] > c1["open"]
+    c2_green = c2["close"] > c2["open"]
+    c3_green = c3["close"] > c3["open"]
 
-    opens = df["Open"].values
-    closes = df["Close"].values
-    highs = df["High"].values
-    lows = df["Low"].values
-    volumes = df["Volume"].values
+    c1_red = c1["close"] < c1["open"]
+    c2_red = c2["close"] < c2["open"]
+    c3_red = c3["close"] < c3["open"]
 
-    c1_green = closes[0] > opens[0]
-    c2_green = closes[1] > opens[1]
-    c3_green = closes[2] > opens[2]
+    initial_3_avg_vol = (c1["volume"] + c2["volume"] + c3["volume"]) / 3.0
 
-    c1_red = closes[0] < opens[0]
-    c2_red = closes[1] < opens[1]
-    c3_red = closes[2] < opens[2]
+    # BUY SETUP
+    if c1_green and c2_green and c3_green:
+        if (
+            curr["close"] < curr["open"]
+            and curr["volume"] < initial_3_avg_vol
+        ):
+            entry = curr["high"]
+            sl = round(curr["low"] * 0.997, 2)  # 0.3% Buffer
+            risk = entry - sl
+            target = round(entry + (risk * 2), 2)  # 1:2 R:R Ratio
+            qty = max(1, int(CAPITAL_PER_TRADE // entry))
 
-    initial_3_avg_vol = np.mean(volumes[:3])
+            return {
+                "signal": "BUY",
+                "entry": round(entry, 2),
+                "sl": sl,
+                "target": target,
+                "qty": qty,
+            }
 
-    for i in range(3, len(df)):
-        curr_open, curr_close = opens[i], closes[i]
-        curr_high, curr_low, curr_vol = highs[i], lows[i], volumes[i]
+    # SELL SETUP
+    if c1_red and c2_red and c3_red:
+        if (
+            curr["close"] > curr["open"]
+            and curr["volume"] < initial_3_avg_vol
+        ):
+            entry = curr["low"]
+            sl = round(curr["high"] * 1.003, 2)  # 0.3% Buffer
+            risk = sl - entry
+            target = round(entry - (risk * 2), 2)  # 1:2 R:R Ratio
+            qty = max(1, int(CAPITAL_PER_TRADE // entry))
 
-        # BUY SETUP LOGIC
-        if c1_green and c2_green and c3_green:
-            if curr_close < curr_open and curr_vol < initial_3_avg_vol:
-                entry = curr_high
-                # 0.3% Buffer on SL to avoid fake hits
-                sl = curr_low * 0.997
-                risk = entry - sl
-                target = entry + (risk * 2)
-
-                # Quantity calculation for ₹50,000 Budget
-                qty = max(1, int(CAPITAL_PER_TRADE // entry))
-
-                return {
-                    "signal": "BUY",
-                    "entry": round(entry, 2),
-                    "sl": round(sl, 2),
-                    "target": round(target, 2),
-                    "qty": qty,
-                }
-
-        # SELL SETUP LOGIC
-        if c1_red and c2_red and c3_red:
-            if curr_close > curr_open and curr_vol < initial_3_avg_vol:
-                entry = curr_low
-                # 0.3% Buffer on SL
-                sl = curr_high * 1.003
-                risk = sl - entry
-                target = entry - (risk * 2)
-
-                # Quantity calculation for ₹50,000 Budget
-                qty = max(1, int(CAPITAL_PER_TRADE // entry))
-
-                return {
-                    "signal": "SELL",
-                    "entry": round(entry, 2),
-                    "sl": round(sl, 2),
-                    "target": round(target, 2),
-                    "qty": qty,
-                }
+            return {
+                "signal": "SELL",
+                "entry": round(entry, 2),
+                "sl": sl,
+                "target": target,
+                "qty": qty,
+            }
 
     return None
 
 
-# --- APP INTERFACE & AUTO REFRESH SETUP ---
-st.title("🎯 Live Auto-Scanning Engine & Performance Tracker")
+# ==============================================================================
+# ORDER EXECUTION ENGINE
+# ==============================================================================
+def execute_trade(stock_symbol, signal_data):
+    """Executes Buy/Sell orders on Groww API."""
+    stock_info = stock_data[stock_symbol]
+    trading_symbol = stock_symbol.replace("NSE_", "")
+    sig_type = signal_data["signal"]
+    qty = signal_data["qty"]
 
-# Sidebar Auto Refresh Controls
-auto_scan = st.sidebar.checkbox("Enable Live Auto Scan", value=True)
-refresh_interval = (
-    st.sidebar.slider("Auto Scan Frequency (Seconds)", 5, 60, 10) * 1000
-)
-
-if auto_scan:
-    st_autorefresh(interval=refresh_interval, key="live_market_auto_scanner")
-
-ist = ZoneInfo("Asia/Kolkata")
-today_str = datetime.now(ist).strftime("%Y-%m-%d")
-
-st.markdown(
-    f"""
-    <div class="status-card">
-        <b>Live Engine Status:</b> {"🟢 AUTO SCANNING LIVE" if auto_scan else "🔴 AUTO SCAN PAUSED"} | 
-        <b>Budget/Trade:</b> ₹50,000 | 
-        <b>Date:</b> {today_str} | 
-        <b>Last Updated (IST):</b> {datetime.now(ist).strftime('%H:%M:%S')}
-    </div>
-""",
-    unsafe_allow_html=True,
-)
-
-if "live_signals" not in st.session_state:
-    st.session_state["live_signals"] = []
-
-# --- SCANNING CORE ENGINE ---
-trade_logs = load_trade_logs()
-current_signals = []
-
-for name, symbol in STOCKS_DICT.items():
-    df = fetch_live_5min_data(symbol)
-    if df is None or df.empty:
-        continue
-
-    latest_price = round(df["Close"].iloc[-1], 2)
-    day_high = round(df["High"].max(), 2)
-    day_low = round(df["Low"].min(), 2)
-
-    signal_data = analyze_pullback_strategy(df)
-
-    if signal_data:
-        sig_type = signal_data["signal"]
-        entry = signal_data["entry"]
-        sl = signal_data["sl"]
-        target = signal_data["target"]
-        qty = signal_data["qty"]
-
-        status = "SETUP FORMED"
-        points_pl = 0.0
-
-        if sig_type == "BUY":
-            if day_high >= target:
-                status = "TARGET HIT 🎯"
-                points_pl = round(target - entry, 2)
-            elif day_low <= sl:
-                status = "SL HIT 🛑"
-                points_pl = round(sl - entry, 2)
-            elif latest_price >= entry:
-                status = "ACTIVE BUY 🟢"
-                points_pl = round(latest_price - entry, 2)
-
-        elif sig_type == "SELL":
-            if day_low <= target:
-                status = "TARGET HIT 🎯"
-                points_pl = round(entry - target, 2)
-            elif day_high >= sl:
-                status = "SL HIT 🛑"
-                points_pl = round(entry - sl, 2)
-            elif latest_price <= entry:
-                status = "ACTIVE SELL 🔴"
-                points_pl = round(entry - latest_price, 2)
-
-        rupee_pl = round(points_pl * qty, 2)
-
-        signal_record = {
-            "Date": today_str,
-            "Stock": name,
-            "Signal": sig_type,
-            "LTP": latest_price,
-            "Qty": qty,
-            "Capital (₹)": round(entry * qty, 2),
-            "Entry Trigger": entry,
-            "Stop Loss (SL)": sl,
-            "Target (Exit)": target,
-            "Status": status,
-            "P&L (Pts)": points_pl,
-            "P&L (₹)": rupee_pl,
-        }
-        current_signals.append(signal_record)
-
-        existing_logged = False
-        if not trade_logs.empty and "Stock" in trade_logs.columns:
-            existing_logged = name in trade_logs["Stock"].values
-
-        if not existing_logged:
-            new_row = pd.DataFrame([{
-                "Date": today_str,
-                "Stock": name,
-                "Symbol": symbol,
-                "Signal": sig_type,
-                "Entry_Price": entry,
-                "SL": sl,
-                "Target": target,
-                "Qty": qty,
-                "Status": status,
-                "Exit_Price": latest_price,
-                "Points_PL": points_pl,
-                "Rupee_PL": rupee_pl,
-            }])
-            trade_logs = pd.concat([trade_logs, new_row], ignore_index=True)
-            save_trade_logs(trade_logs)
-
-st.session_state["live_signals"] = current_signals
-
-# --- DISPLAY DASHBOARD ---
-signals_to_display = st.session_state["live_signals"]
-
-total_count = len(signals_to_display)
-wins = sum(
-    1 for item in signals_to_display if "TARGET HIT" in item["Status"]
-)
-losses = sum(1 for item in signals_to_display if "SL HIT" in item["Status"])
-net_rupee_pl = sum(item["P&L (₹)"] for item in signals_to_display)
-
-# SINGLE-LINE P&L SUMMARY DISPLAY (IN RUPEES)
-st.markdown(
-    f"""
-    <div style="background-color:#0f172a; padding:12px; border-radius:8px; border:1px solid #334155; font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom: 15px;">
-        📊 Trades: <span style="color:#38bdf8;">{total_count}</span> | 
-        Targets: <span style="color:#22c55e;">{wins}</span> | 
-        SL: <span style="color:#ef4444;">{losses}</span> | 
-        Overall P&L: <span style="color:{'#22c55e' if net_rupee_pl >= 0 else '#ef4444'};">₹{net_rupee_pl:+,.2f}</span>
-    </div>
-""",
-    unsafe_allow_html=True,
-)
-
-st.divider()
-
-# Signals Table
-st.subheader("📋 Subah Se Mile Saare Signals & Live Status")
-if signals_to_display:
-    df_display = pd.DataFrame(signals_to_display)
-    st.dataframe(df_display, use_container_width=True)
-else:
-    st.info(
-        "Continuous Scanning Running... Abhi tak koi valid pattern breakout nahi hua hai."
+    trans_type = (
+        groww.TRANSACTION_TYPE_BUY
+        if sig_type == "BUY"
+        else groww.TRANSACTION_TYPE_SELL
     )
+
+    try:
+        print(f"\n🚀 EXECUTION TRIGGERED FOR [{trading_symbol}]")
+        print(
+            f"   • Signal: {sig_type} | Qty: {qty} shares (Capital Budget: ₹50,000)"
+        )
+        print(f"   • Entry Price: ₹{signal_data['entry']}")
+        print(f"   • Stop Loss (SL): ₹{signal_data['sl']}")
+        print(f"   • Target (1:2 R:R): ₹{signal_data['target']}")
+
+        order = groww.place_order(
+            validity=groww.VALIDITY_DAY,
+            exchange=groww.EXCHANGE_NSE,
+            order_type=groww.ORDER_TYPE_MARKET,
+            product=PRODUCT_TYPE,
+            quantity=qty,
+            segment=groww.SEGMENT_CASH,
+            trading_symbol=trading_symbol,
+            transaction_type=trans_type,
+            price=0.0,
+        )
+
+        stock_info["position"] = 1 if sig_type == "BUY" else -1
+        stock_info["entry_price"] = signal_data["entry"]
+        stock_info["sl_price"] = signal_data["sl"]
+        stock_info["target_price"] = signal_data["target"]
+        stock_info["qty"] = qty
+
+        print(
+            f"   ✅ Order Executed Successfully! Order ID: {order.get('groww_order_id', 'N/A')}\n"
+        )
+        return True
+    except Exception as e:
+        print(f"   ❌ Order Placement Error: {e}\n")
+        return False
+
+
+def close_position(stock_symbol, current_price, reason="EXIT"):
+    """Exits Active Positions on Target or SL Hit."""
+    stock_info = stock_data[stock_symbol]
+    trading_symbol = stock_symbol.replace("NSE_", "")
+    qty = stock_info["qty"]
+    pos = stock_info["position"]
+
+    trans_type = (
+        groww.TRANSACTION_TYPE_SELL
+        if pos == 1
+        else groww.TRANSACTION_TYPE_BUY
+    )
+
+    try:
+        print(f"\n⚠️ [{trading_symbol}] {reason} TRIGGERED @ ₹{current_price:.2f}")
+
+        order = groww.place_order(
+            validity=groww.VALIDITY_DAY,
+            exchange=groww.EXCHANGE_NSE,
+            order_type=groww.ORDER_TYPE_MARKET,
+            product=PRODUCT_TYPE,
+            quantity=qty,
+            segment=groww.SEGMENT_CASH,
+            trading_symbol=trading_symbol,
+            transaction_type=trans_type,
+            price=0.0,
+        )
+
+        if pos == 1:
+            pnl = (current_price - stock_info["entry_price"]) * qty
+        else:
+            pnl = (stock_info["entry_price"] - current_price) * qty
+
+        print(f"   📊 Trade Closed. Realized P&L: ₹{pnl:+.2f}")
+
+        # Reset stock position state
+        stock_info["position"] = 0
+        stock_info["entry_price"] = 0.0
+        stock_info["sl_price"] = 0.0
+        stock_info["target_price"] = 0.0
+        stock_info["qty"] = 0
+        return True
+    except Exception as e:
+        print(f"   ❌ Position Close Error: {e}\n")
+        return False
+
+
+# ==============================================================================
+# INITIALIZATION & MONITORING LOOP
+# ==============================================================================
+print("\n" + "=" * 70)
+print("📊 INITIALIZING 3-CANDLE PULLBACK TRADING ENGINE (GROWW LIVE)")
+print("=" * 70)
+
+for stock in STOCKS:
+    stock_data[stock] = {
+        "position": 0,  # 1 = Long, -1 = Short, 0 = Flat
+        "entry_price": 0.0,
+        "sl_price": 0.0,
+        "target_price": 0.0,
+        "qty": 0,
+    }
+
+print(f"✅ Scanning initial setups for {len(STOCKS)} stocks...")
+
+while True:
+    try:
+        for stock_symbol in STOCKS:
+            trading_symbol = stock_symbol.replace("NSE_", "")
+            stock_info = stock_data[stock_symbol]
+
+            # 1. Fetch candles
+            raw_data = get_historical_data(stock_symbol, days=2)
+            candles = extract_candles(raw_data)
+
+            processed_candles = []
+            for c in candles:
+                ts, o, h, l, cl, v = extract_candle_ohlcv(c)
+                if cl is not None:
+                    processed_candles.append(
+                        {
+                            "time": ts,
+                            "open": o,
+                            "high": h,
+                            "low": l,
+                            "close": cl,
+                            "volume": v,
+                        }
+                    )
+
+            if len(processed_candles) < 4:
+                continue
+
+            current_price = processed_candles[-1]["close"]
+
+            # 2. Check for SL / Target Hits if Position is ACTIVE
+            if stock_info["position"] == 1:  # Long Position
+                if current_price >= stock_info["target_price"]:
+                    close_position(
+                        stock_symbol, current_price, reason="TARGET HIT 🎯"
+                    )
+                elif current_price <= stock_info["sl_price"]:
+                    close_position(
+                        stock_symbol, current_price, reason="STOP LOSS HIT 🛑"
+                    )
+
+            elif stock_info["position"] == -1:  # Short Position
+                if current_price <= stock_info["target_price"]:
+                    close_position(
+                        stock_symbol, current_price, reason="TARGET HIT 🎯"
+                    )
+                elif current_price >= stock_info["sl_price"]:
+                    close_position(
+                        stock_symbol, current_price, reason="STOP LOSS HIT 🛑"
+                    )
+
+            # 3. Check for NEW Setup Signal if FLAT
+            elif stock_info["position"] == 0:
+                signal_data = analyze_3candle_pullback(processed_candles)
+                if signal_data:
+                    execute_trade(stock_symbol, signal_data)
+
+            # 4. Status Print
+            pos_str = (
+                "BUY ACTIVE"
+                if stock_info["position"] == 1
+                else (
+                    "SELL ACTIVE" if stock_info["position"] == -1 else "SCANNING"
+                )
+            )
+            print(
+                f"\r[{trading_symbol}] Price: ₹{current_price:.2f} | Status: {pos_str}",
+                end="",
+                flush=True,
+            )
+
+        time.sleep(5)  # Scan every 5 seconds
+
+    except KeyboardInterrupt:
+        print("\n🛑 Stopped by User.")
+        break
+    except Exception as e:
+        print(f"\n❌ Error in live loop: {e}")
+        time.sleep(5)
