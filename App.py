@@ -26,9 +26,10 @@ st.markdown(
 )
 
 LOG_FILE = "trades_log.csv"
+CAPITAL_PER_TRADE = 50000.0  # ₹50,000 Fixed Capital Budget
 
 
-# Ensure CSV Persistence across refreshes
+# Ensure CSV Persistence
 def init_log_file():
     if not os.path.exists(LOG_FILE):
         df = pd.DataFrame(columns=[
@@ -39,9 +40,11 @@ def init_log_file():
             "Entry_Price",
             "SL",
             "Target",
+            "Qty",
             "Status",
             "Exit_Price",
             "Points_PL",
+            "Rupee_PL",
         ])
         df.to_csv(LOG_FILE, index=False)
 
@@ -107,7 +110,7 @@ def fetch_live_5min_data(ticker_symbol):
 
 
 def analyze_pullback_strategy(df):
-    """Opening Range 3-Candle Pullback & Low Volume Strategy Engine."""
+    """Strategy Engine with SL Buffer & ₹50k Quantity Calculation."""
     if df is None or len(df) < 4:
         return None
 
@@ -135,28 +138,40 @@ def analyze_pullback_strategy(df):
         if c1_green and c2_green and c3_green:
             if curr_close < curr_open and curr_vol < initial_3_avg_vol:
                 entry = curr_high
-                sl = curr_low
+                # 0.3% Buffer on SL to avoid fake hits
+                sl = curr_low * 0.997
                 risk = entry - sl
                 target = entry + (risk * 2)
+
+                # Quantity calculation for ₹50,000 Budget
+                qty = max(1, int(CAPITAL_PER_TRADE // entry))
+
                 return {
                     "signal": "BUY",
                     "entry": round(entry, 2),
                     "sl": round(sl, 2),
                     "target": round(target, 2),
+                    "qty": qty,
                 }
 
         # SELL SETUP LOGIC
         if c1_red and c2_red and c3_red:
             if curr_close > curr_open and curr_vol < initial_3_avg_vol:
                 entry = curr_low
-                sl = curr_high
+                # 0.3% Buffer on SL
+                sl = curr_high * 1.003
                 risk = sl - entry
                 target = entry - (risk * 2)
+
+                # Quantity calculation for ₹50,000 Budget
+                qty = max(1, int(CAPITAL_PER_TRADE // entry))
+
                 return {
                     "signal": "SELL",
                     "entry": round(entry, 2),
                     "sl": round(sl, 2),
                     "target": round(target, 2),
+                    "qty": qty,
                 }
 
     return None
@@ -171,7 +186,6 @@ refresh_interval = (
     st.sidebar.slider("Auto Scan Frequency (Seconds)", 5, 60, 10) * 1000
 )
 
-# Trigger Automatic Background Refresh
 if auto_scan:
     st_autorefresh(interval=refresh_interval, key="live_market_auto_scanner")
 
@@ -182,6 +196,7 @@ st.markdown(
     f"""
     <div class="status-card">
         <b>Live Engine Status:</b> {"🟢 AUTO SCANNING LIVE" if auto_scan else "🔴 AUTO SCAN PAUSED"} | 
+        <b>Budget/Trade:</b> ₹50,000 | 
         <b>Date:</b> {today_str} | 
         <b>Last Updated (IST):</b> {datetime.now(ist).strftime('%H:%M:%S')}
     </div>
@@ -189,7 +204,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Persistent State Storage
 if "live_signals" not in st.session_state:
     st.session_state["live_signals"] = []
 
@@ -213,6 +227,7 @@ for name, symbol in STOCKS_DICT.items():
         entry = signal_data["entry"]
         sl = signal_data["sl"]
         target = signal_data["target"]
+        qty = signal_data["qty"]
 
         status = "SETUP FORMED"
         points_pl = 0.0
@@ -239,16 +254,21 @@ for name, symbol in STOCKS_DICT.items():
                 status = "ACTIVE SELL 🔴"
                 points_pl = round(entry - latest_price, 2)
 
+        rupee_pl = round(points_pl * qty, 2)
+
         signal_record = {
             "Date": today_str,
             "Stock": name,
             "Signal": sig_type,
             "LTP": latest_price,
+            "Qty": qty,
+            "Capital (₹)": round(entry * qty, 2),
             "Entry Trigger": entry,
             "Stop Loss (SL)": sl,
             "Target (Exit)": target,
             "Status": status,
-            "Live P&L (Pts)": points_pl,
+            "P&L (Pts)": points_pl,
+            "P&L (₹)": rupee_pl,
         }
         current_signals.append(signal_record)
 
@@ -265,9 +285,11 @@ for name, symbol in STOCKS_DICT.items():
                 "Entry_Price": entry,
                 "SL": sl,
                 "Target": target,
+                "Qty": qty,
                 "Status": status,
                 "Exit_Price": latest_price,
                 "Points_PL": points_pl,
+                "Rupee_PL": rupee_pl,
             }])
             trade_logs = pd.concat([trade_logs, new_row], ignore_index=True)
             save_trade_logs(trade_logs)
@@ -282,16 +304,16 @@ wins = sum(
     1 for item in signals_to_display if "TARGET HIT" in item["Status"]
 )
 losses = sum(1 for item in signals_to_display if "SL HIT" in item["Status"])
-net_pl = sum(item["Live P&L (Pts)"] for item in signals_to_display)
+net_rupee_pl = sum(item["P&L (₹)"] for item in signals_to_display)
 
-# SINGLE-LINE P&L SUMMARY DISPLAY
+# SINGLE-LINE P&L SUMMARY DISPLAY (IN RUPEES)
 st.markdown(
     f"""
     <div style="background-color:#0f172a; padding:12px; border-radius:8px; border:1px solid #334155; font-size:15px; font-weight:bold; color:#f8fafc; margin-bottom: 15px;">
         📊 Trades: <span style="color:#38bdf8;">{total_count}</span> | 
         Targets: <span style="color:#22c55e;">{wins}</span> | 
         SL: <span style="color:#ef4444;">{losses}</span> | 
-        Overall P&L: <span style="color:{'#22c55e' if net_pl >= 0 else '#ef4444'};">{net_pl:+.2f} Pts</span>
+        Overall P&L: <span style="color:{'#22c55e' if net_rupee_pl >= 0 else '#ef4444'};">₹{net_rupee_pl:+,.2f}</span>
     </div>
 """,
     unsafe_allow_html=True,
