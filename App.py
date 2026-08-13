@@ -1,92 +1,156 @@
+from datetime import datetime
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 # -----------------------------------------------------------------------------
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Real-Time Strategy Dashboard", layout="wide")
-st.title("🎯 Strategy Execution: Strategy Low, Entry, SL & Target")
+st.set_page_config(
+    page_title="Live Auto-Scanning Engine & Performance Tracker",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Auto-refresh every 10 seconds for live scanning
+st_autorefresh(interval=10000, key="datarefresh")
 
 # -----------------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# CSS FOR UI CARDS (EXACT SCREENSHOT LOOK)
 # -----------------------------------------------------------------------------
-st.sidebar.header("Strategy Inputs")
-symbol = st.sidebar.text_input("Enter NSE Stock Symbol (e.g., RELIANCE.NS, TATAMOTORS.NS)", value="RELIANCE.NS")
-lookback_period = st.sidebar.selectbox("Lookback Data Period", ["1d", "5d", "1mo", "3mo"], index=1)
-timeframe = st.sidebar.selectbox("Timeframe", ["5m", "15m", "60m", "1d"], index=1)
-
-st.sidebar.subheader("Risk & Strategy Rules")
-rr_ratio = st.sidebar.number_input("Risk-To-Reward Ratio (1:X)", min_value=1.0, value=2.0, step=0.5)
-buffer_pct = st.sidebar.number_input("SL Buffer Below Strategy Low (%)", min_value=0.0, value=0.2, step=0.1)
-
-# -----------------------------------------------------------------------------
-# FETCH REAL DATA & CALCULATE STRATEGY
-# -----------------------------------------------------------------------------
-def execute_strategy(ticker_symbol, period, interval):
-    # Fetch live/latest market data from Yahoo Finance
-    ticker = yf.Ticker(ticker_symbol)
-    df = ticker.history(period=period, interval=interval)
-    
-    if df.empty:
-        return None, "No market data found for the given symbol."
-    
-    # Real Calculations based on recent candle strategy
-    latest_candle = df.iloc[-1]
-    previous_candles = df.iloc[-10:] # Look at last 10 candles for local low
-    
-    # Strategy Low: Lowest price point in the recent window
-    strategy_low = float(previous_candles['Low'].min())
-    
-    # Real Entry: Current Market Price (Latest Close)
-    entry_price = float(latest_candle['Close'])
-    
-    # Stop Loss: Strategy Low minus buffer %
-    stop_loss = strategy_low * (1 - (buffer_pct / 100.0))
-    
-    # Risk per share
-    risk = entry_price - stop_loss
-    
-    # Target Price based on Risk-Reward Ratio
-    target_price = entry_price + (risk * rr_ratio)
-    
-    strategy_data = {
-        "Symbol": ticker_symbol,
-        "Current Entry": round(entry_price, 2),
-        "Strategy Low": round(strategy_low, 2),
-        "Stop Loss (SL)": round(stop_loss, 2),
-        "Target Price": round(target_price, 2),
-        "Risk Amount": round(risk, 2),
-        "Reward Amount": round(risk * rr_ratio, 2)
+st.markdown("""
+    <style>
+    .status-card {
+        background-color: #1e2530;
+        border: 1px solid #2e3846;
+        border-radius: 8px;
+        padding: 14px 18px;
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 500;
+        margin-bottom: 12px;
     }
-    
-    return strategy_data, df
+    .pnl-card {
+        background-color: #1e2530;
+        border: 1px solid #2e3846;
+        border-radius: 8px;
+        padding: 14px 18px;
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 500;
+        margin-bottom: 20px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# MAIN APP EXECUTION
+# APP HEADER
 # -----------------------------------------------------------------------------
-if st.button("Run Real Strategy Analysis", width="stretch"):
-    with st.spinner("Fetching live market data..."):
-        results, market_data = execute_strategy(symbol, lookback_period, timeframe)
-        
-        if results is None:
-            st.error(market_data)
-        else:
-            # Display Real Strategy Metrics
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("📌 Entry Price (CMP)", f"₹{results['Current Entry']}")
-            c2.metric("📉 Strategy Low", f"₹{results['Strategy Low']}")
-            c3.metric("🔴 Stop Loss (SL)", f"₹{results['Stop Loss (SL)']}")
-            c4.metric("🟢 Target (TP)", f"₹{results['Target Price']}")
+st.markdown("### 🎯 Live Auto-Scanning Engine & Performance Tracker")
+
+# Current IST Time
+now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+current_date = now_ist.strftime("%Y-%m-%d")
+current_time = now_ist.strftime("%H:%M:%S")
+
+# -----------------------------------------------------------------------------
+# WATCHLIST & SCANNING LOGIC (REAL DATA VIA YFINANCE)
+# -----------------------------------------------------------------------------
+# Aap apni watchlist yahan add kar sakte hain
+WATCHLIST = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
+
+def scan_live_signals():
+    signals = []
+    
+    for symbol in WATCHLIST:
+        try:
+            ticker = yf.Ticker(symbol)
+            # Fetching 1-day interval data for real levels
+            df = ticker.history(period="5d", interval="15m")
             
-            st.divider()
+            if not df.empty and len(df) >= 2:
+                latest = df.iloc[-1]
+                prev = df.iloc[-2]
+                
+                close_price = round(float(latest['Close']), 1)
+                high_price = round(float(prev['High']), 1)
+                low_price = round(float(prev['Low']), 1)
+                
+                # Dynamic Strategy: Entry at CMP, SL at Prev Low, Target based on Risk-Reward
+                entry_trigger = close_price
+                risk = abs(entry_trigger - low_price)
+                
+                # If risk is minimal, set 0.5% default buffer
+                if risk == 0:
+                    risk = round(entry_trigger * 0.005, 1)
+                    
+                stop_loss = round(entry_trigger - risk, 1)
+                target = round(entry_trigger + (risk * 1.5), 1)
+                
+                # Calculating live P&L status
+                pnl_pts = round(close_price - entry_trigger, 1)
+                status = "TARGET" if close_price >= target else ("SL" if close_price <= stop_loss else "LIVE")
+
+                signals.append({
+                    "Symbol": symbol.replace(".NS", ""),
+                    "Entry Trigger": entry_trigger,
+                    "Stop Loss (SL)": stop_loss,
+                    "Target (Exit)": target,
+                    "Current Price": close_price,
+                    "Status": status,
+                    "P&L Pts": pnl_pts
+                })
+        except Exception:
+            continue
             
-            # Risk/Reward Summary
-            st.subheader("📊 Trade Parameters")
-            col_a, col_b = st.columns(2)
-            col_a.info(f"**Risk per Share:** ₹{results['Risk Amount']}")
-            col_b.success(f"**Expected Reward per Share:** ₹{results['Reward Amount']}")
-            
-            # Show Recent Live Market Data (Real OHLC)
-            st.subheader("📈 Live Market Data (Last 10 Candles)")
-            st.dataframe(market_data[['Open', 'High', 'Low', 'Close', 'Volume']].tail(10), width="stretch")
+    return pd.DataFrame(signals)
+
+# Fetch Scan Results
+df_signals = scan_live_signals()
+
+# -----------------------------------------------------------------------------
+# CALCULATE SUMMARY METRICS
+# -----------------------------------------------------------------------------
+if not df_signals.empty:
+    total_trades = len(df_signals)
+    targets_hit = len(df_signals[df_signals["Status"] == "TARGET"])
+    sl_hit = len(df_signals[df_signals["Status"] == "SL"])
+    overall_pnl = round(df_signals["P&L Pts"].sum(), 2)
+else:
+    total_trades = 0
+    targets_hit = 0
+    sl_hit = 0
+    overall_pnl = 0.0
+
+# P&L Color styling
+pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
+
+# -----------------------------------------------------------------------------
+# DISPLAY STATUS CARDS
+# -----------------------------------------------------------------------------
+st.markdown(f"""
+    <div class="status-card">
+        <b>Live Engine Status:</b> 🟢 AUTO SCANNING LIVE | <b>Date:</b> {current_date} | <b>Last Updated (IST):</b> {current_time}
+    </div>
+""", unsafe_allow_html=True)
+
+st.markdown(f"""
+    <div class="pnl-card">
+        📊 <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>Overall P&L:</b> <span style="color:{pnl_color};">{overall_pnl} Pts</span>
+    </div>
+""", unsafe_allow_html=True)
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
+# DISPLAY SIGNALS TABLE
+# -----------------------------------------------------------------------------
+st.markdown("### 📋 Subah Se Mile Saare Signals & Live Status")
+
+if not df_signals.empty:
+    display_df = df_signals[["Entry Trigger", "Stop Loss (SL)", "Target (Exit)"]]
+    st.dataframe(display_df, width="stretch")
+else:
+    st.info("Scanning for live signals...")
