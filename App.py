@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Live Auto-Scanning Engine & Performance Tracker", layout="wide"
+    page_title="20 EMA + VWAP Pullback Live Dashboard", layout="wide"
 )
 
 # Auto refresh every 10 seconds
@@ -39,25 +39,48 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 Live Auto-Scanning Engine & Performance Tracker")
+st.markdown("### 🎯 20 EMA + VWAP Pullback Auto-Scanning & Performance Dashboard")
 
 now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
 current_date = now_ist.strftime("%Y-%m-%d")
 current_time = now_ist.strftime("%H:%M:%S")
 
+# 4 Stocks Selected for Trading (Budget ₹12,500 each = ₹50,000 total)
 WATCHLIST = [
     "RELIANCE.NS",
     "TCS.NS",
     "INFY.NS",
-    "HDFCBANK.NS",
-    "ICICIBANK.NS",
-    "SBIN.NS",
-    "BHARTIARTL.NS",
-    "TATAMOTORS.NS",
+    "HDFCBANK.NS"
 ]
 
+TOTAL_CAPITAL = 50000.0
+CAPITAL_PER_STOCK = 12500.0  # ₹50,000 / 4 stocks
+
 # -----------------------------------------------------------------------------
-# STRICT SINGLE-TRADE ENGINE (HISTORICAL LOCKING)
+# TECHNICAL INDICATOR HELPER FUNCTIONS
+# -----------------------------------------------------------------------------
+def calculate_vwap(df):
+    """Calculates Intraday VWAP"""
+    v = df['Volume'].values
+    tp = (df['High'] + df['Low'] + df['Close']) / 3
+    return (tp * v).cumsum() / v.cumsum()
+
+def calculate_atr(df, period=14):
+    """Calculates Average True Range (ATR 14)"""
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
+
+# -----------------------------------------------------------------------------
+# 20 EMA + VWAP PULLBACK SCANNING ENGINE
 # -----------------------------------------------------------------------------
 def scan_and_lock_trades():
     all_signals = []
@@ -67,130 +90,123 @@ def scan_and_lock_trades():
             ticker = yf.Ticker(symbol)
             df = ticker.history(period="1d", interval="5m")
 
-            if df.empty or len(df) < 4:
+            if df.empty or len(df) < 25:
                 continue
+
+            # Indicators Calculation
+            df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
+            df['VWAP'] = calculate_vwap(df)
+            df['ATR14'] = calculate_atr(df, 14)
 
             opens = df["Open"].values
             closes = df["Close"].values
             highs = df["High"].values
             lows = df["Low"].values
-            volumes = df["Volume"].values
+            ema20 = df["EMA20"].values
+            vwap = df["VWAP"].values
+            atr14 = df["ATR14"].values
             timestamps = df.index
 
-            trade_active = False  # Track if a trade is already running/closed for this stock
+            trade_active = False  # Ensure single active trade per stock
 
-            for i in range(3, len(df)):
-                # If a trade for this symbol already exists, track its progress till exit
+            for i in range(20, len(df)):
                 if trade_active:
                     continue
 
-                c1_green, c2_green, c3_green = (
-                    closes[i - 3] > opens[i - 3],
-                    closes[i - 2] > opens[i - 2],
-                    closes[i - 1] > opens[i - 1],
-                )
-                c1_red, c2_red, c3_red = (
-                    closes[i - 3] < opens[i - 3],
-                    closes[i - 2] < opens[i - 2],
-                    closes[i - 1] < opens[i - 1],
-                )
+                curr_close = closes[i]
+                curr_open = opens[i]
+                curr_high = highs[i]
+                curr_low = lows[i]
+                curr_ema = ema20[i]
+                curr_vwap = vwap[i]
+                curr_atr = atr14[i]
 
-                avg_vol_3 = np.mean(volumes[i - 3 : i])
-                curr_open, curr_close, curr_high, curr_low, curr_vol = (
-                    opens[i],
-                    closes[i],
-                    highs[i],
-                    lows[i],
-                    volumes[i],
-                )
+                if np.isnan(curr_atr) or curr_atr == 0:
+                    continue
+
                 signal_time = timestamps[i].strftime("%H:%M")
 
-                # BUY TRIGGER
-                if (
-                    c1_green
-                    and c2_green
-                    and c3_green
-                    and curr_close < curr_open
-                    and curr_vol < avg_vol_3
-                ):
-                    entry = round(float(curr_high), 2)
-                    sl = round(float(curr_low * 0.997), 2)
+                # 🟢 LONG TRIGGER: 20 EMA > VWAP & Pullback to 20 EMA
+                bullish_trend = curr_ema > curr_vwap
+                long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
+
+                # 🔴 SHORT TRIGGER: 20 EMA < VWAP & Pullback to 20 EMA
+                bearish_trend = curr_ema < curr_vwap
+                short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
+
+                if long_pullback:
+                    entry = round(float(curr_close), 2)
+                    sl = round(float(entry - (1.5 * curr_atr)), 2)
                     risk = entry - sl
-                    target = round(entry + (risk * 2), 2)
-
-                    # Check future candles after signal to lock SL/Target History
-                    final_status = "LIVE 🟡"
-                    final_pnl = round(closes[-1] - entry, 2)
+                    target = round(float(entry + (2.0 * risk)), 2)
                     
-                    for j in range(i + 1, len(df)):
-                        future_high = highs[j]
-                        future_low = lows[j]
+                    qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                        if future_low <= sl:
+                    final_status = "LIVE 🟡"
+                    cmp_price = round(float(closes[-1]), 2)
+                    final_pnl = round((cmp_price - entry) * qty, 2)
+
+                    # Check future candles for SL/TP exit
+                    for j in range(i + 1, len(df)):
+                        if lows[j] <= sl:
                             final_status = "SL HIT 🔴"
-                            final_pnl = round(sl - entry, 2)
+                            final_pnl = round((sl - entry) * qty, 2)
                             break
-                        elif future_high >= target:
+                        elif highs[j] >= target:
                             final_status = "TARGET 🟢"
-                            final_pnl = round(target - entry, 2)
+                            final_pnl = round((target - entry) * qty, 2)
                             break
 
                     all_signals.append({
                         "Time": signal_time,
                         "Symbol": symbol.replace(".NS", ""),
-                        "Type": "BUY",
-                        "Entry Trigger": entry,
+                        "Type": "BUY 🟢",
+                        "Qty": qty,
+                        "Entry Price": entry,
                         "Stop Loss (SL)": sl,
-                        "Target (Exit)": target,
-                        "CMP": round(float(closes[-1]), 2),
+                        "Target": target,
+                        "CMP": cmp_price,
                         "Status": final_status,
-                        "P&L Pts": final_pnl
+                        "P&L (₹)": final_pnl
                     })
-                    
-                    trade_active = True  # Lock this symbol (No re-triggering allowed)
+                    trade_active = True
 
-                # SELL TRIGGER
-                elif (
-                    c1_red
-                    and c2_red
-                    and c3_red
-                    and curr_close > curr_open
-                    and curr_vol < avg_vol_3
-                ):
-                    entry = round(float(curr_low), 2)
-                    sl = round(float(curr_high * 1.003), 2)
+                elif short_pullback:
+                    entry = round(float(curr_close), 2)
+                    sl = round(float(entry + (1.5 * curr_atr)), 2)
                     risk = sl - entry
-                    target = round(entry - (risk * 2), 2)
+                    target = round(float(entry - (2.0 * risk)), 2)
+                    
+                    qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
                     final_status = "LIVE 🟡"
-                    final_pnl = round(entry - closes[-1], 2)
+                    cmp_price = round(float(closes[-1]), 2)
+                    final_pnl = round((entry - cmp_price) * qty, 2)
 
+                    # Check future candles for SL/TP exit
                     for j in range(i + 1, len(df)):
-                        future_high = highs[j]
-                        future_low = lows[j]
-
-                        if future_high >= sl:
+                        if highs[j] >= sl:
                             final_status = "SL HIT 🔴"
-                            final_pnl = round(entry - sl, 2)
+                            final_pnl = round((entry - sl) * qty, 2)
                             break
-                        elif future_low <= target:
+                        elif lows[j] <= target:
                             final_status = "TARGET 🟢"
-                            final_pnl = round(entry - target, 2)
+                            final_pnl = round((entry - target) * qty, 2)
                             break
 
                     all_signals.append({
                         "Time": signal_time,
                         "Symbol": symbol.replace(".NS", ""),
-                        "Type": "SELL",
-                        "Entry Trigger": entry,
+                        "Type": "SELL 🔴",
+                        "Qty": qty,
+                        "Entry Price": entry,
                         "Stop Loss (SL)": sl,
-                        "Target (Exit)": target,
-                        "CMP": round(float(closes[-1]), 2),
+                        "Target": target,
+                        "CMP": cmp_price,
                         "Status": final_status,
-                        "P&L Pts": final_pnl
+                        "P&L (₹)": final_pnl
                     })
-
-                    trade_active = True  # Lock this symbol (No re-triggering allowed)
+                    trade_active = True
 
         except Exception:
             continue
@@ -198,7 +214,7 @@ def scan_and_lock_trades():
     return pd.DataFrame(all_signals)
 
 # -----------------------------------------------------------------------------
-# DISPLAY METRICS & TABLE
+# DISPLAY METRICS & STREAMLIT DASHBOARD
 # -----------------------------------------------------------------------------
 df_signals = scan_and_lock_trades()
 
@@ -206,7 +222,7 @@ if not df_signals.empty:
     total_trades = len(df_signals)
     targets_hit = len(df_signals[df_signals["Status"].str.contains("TARGET")])
     sl_hit = len(df_signals[df_signals["Status"].str.contains("SL HIT")])
-    overall_pnl = round(df_signals["P&L Pts"].sum(), 2)
+    overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
 else:
     total_trades = 0
     targets_hit = 0
@@ -215,21 +231,22 @@ else:
 
 pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
 
-# Top Bar Section
+# Top Engine Status Header
 st.markdown(f"""
     <div class="status-card">
-        <b>Live Engine Status:</b> 🟢 AUTO SCANNING LIVE | <b>Date:</b> {current_date} | <b>Last Updated (IST):</b> {current_time}
+        <b>Live Engine Status:</b> 🟢 20 EMA + VWAP SCANNING LIVE | <b>Date:</b> {current_date} | <b>Last Updated (IST):</b> {current_time}
     </div>
 """, unsafe_allow_html=True)
 
+# Performance P&L Summary Card
 st.markdown(f"""
     <div class="pnl-card">
-        📊 <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>Overall P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">{overall_pnl} Pts</span>
+        📊 <b>Total Capital:</b> ₹50,000 | <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>Overall P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
     </div>
 """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.markdown("### 📋 Subah Se Mile Saare Signals & Live Status")
+st.markdown("### 📋 Trades Log & Real-Time Performance Dashboard")
 
 if not df_signals.empty:
     st.dataframe(
@@ -238,15 +255,16 @@ if not df_signals.empty:
                 "Time",
                 "Symbol",
                 "Type",
-                "Entry Trigger",
+                "Qty",
+                "Entry Price",
                 "Stop Loss (SL)",
-                "Target (Exit)",
+                "Target",
                 "CMP",
                 "Status",
-                "P&L Pts"
+                "P&L (₹)"
             ]
         ],
-        width="stretch",
+        use_container_width=True,
     )
 else:
-    st.info("Subah 9:15 se abhi tak koi trade setup scan nahi hua hai.")
+    st.info("20 EMA + VWAP Pullback setup ke hisab se abhi tak koi valid trade nahi mila hai.")
