@@ -113,8 +113,9 @@ with st.sidebar:
     st.caption(f"Risk:Reward = 1 : {round(TARGET_ATR_MULT/SL_ATR_MULT, 2)}")
 
     st.subheader("Stock filter (avoid dead / illiquid stocks)")
-    MIN_ATR_PCT = st.number_input("Min ATR as % of price", value=1.5, step=0.1, format="%.1f") / 100
-    st.caption("Stocks whose ATR is below this % of price are skipped for the day â€” they rarely move enough to hit target.")
+    st.caption("NOTE: this is % of price PER 5-MIN CANDLE, not daily range — typical values are 0.1%-0.4%, not 1-2%.")
+    MIN_ATR_PCT = st.number_input("Min 5-min ATR as % of price", value=0.20, step=0.05, format="%.2f") / 100
+    st.caption("Stocks whose 5-min ATR is below this % of price are skipped for the day — they rarely move enough to hit target.")
 
     st.subheader("Overtrading control")
     ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox("Max 1 trade per stock per day", value=True)
@@ -416,7 +417,7 @@ def render_dashboard():
 
 # -----------------------------------------------------------------------------
 # BACKTEST: last 60 days, ATR-based SL/Target, volatility filter,
-# one-trade-per-stock-per-day cooldown â€” same rules as live.
+# one-trade-per-stock-per-day cooldown — same rules as live.
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, capital_per_stock, symbols):
@@ -553,7 +554,7 @@ def render_backtest_tab():
         return
 
     if bt_df.empty:
-        st.warning("Koi trade nahi mila is period me in settings ke saath â€” filter shayad zyada strict hai.")
+        st.warning("Koi trade nahi mila is period me in settings ke saath — filter shayad zyada strict hai.")
         return
 
     total_trades = len(bt_df)
