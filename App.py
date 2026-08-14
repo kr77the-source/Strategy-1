@@ -104,7 +104,7 @@ def calculate_atr(df, period=14):
     return tr.rolling(window=period).mean()
 
 # -----------------------------------------------------------------------------
-# SCANNING ENGINE WITH SLOTS CONTROL
+# SCANNING ENGINE WITH SLOTS CONTROL (1:3 RISK REWARD)
 # -----------------------------------------------------------------------------
 def scan_nifty50_with_slots():
     all_signals = []
@@ -151,7 +151,7 @@ def scan_nifty50_with_slots():
                 short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
 
                 if long_pullback or short_pullback:
-                    # Slot Control Check: Agar active trades pehle se 4 hain, to new trade hold hoga
+                    # Slot Control Check: Max 4 active trades
                     if active_trades_count >= MAX_ACTIVE_TRADES:
                         break
 
@@ -161,11 +161,11 @@ def scan_nifty50_with_slots():
                     if long_pullback:
                         sl = round(float(entry - (1.5 * curr_atr)), 2)
                         risk = entry - sl
-                        target = round(float(entry + (2.0 * risk)), 2)
+                        target = round(float(entry + (3.0 * risk)), 2)  # Target 3x Risk
                     else:
                         sl = round(float(entry + (1.5 * curr_atr)), 2)
                         risk = sl - entry
-                        target = round(float(entry - (2.0 * risk)), 2)
+                        target = round(float(entry - (3.0 * risk)), 2)  # Target 3x Risk
 
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
                     cmp_price = round(float(closes[-1]), 2)
@@ -194,7 +194,7 @@ def scan_nifty50_with_slots():
                                 final_pnl = round((entry - target) * qty, 2)
                                 break
 
-                    # Agar trade LIVE hai, to counter badhega
+                    # Active live trade counter increment
                     if final_status == "LIVE 🟡":
                         active_trades_count += 1
 
