@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Real-Time 20 EMA + VWAP Live Dashboard", layout="wide"
+    page_title="20 EMA + VWAP Full Day Live Dashboard", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,14 +57,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 20 EMA + VWAP Pullback Real Live Dashboard")
+st.markdown("### 🎯 20 EMA + VWAP Full Day (09:15 - 15:30) Dashboard")
 
 # -----------------------------------------------------------------------------
-# SESSION STATE (TRADES PERMANENT SAVE RAKHNE KE LIYE)
+# WATCHLIST & CONFIG
 # -----------------------------------------------------------------------------
-if "real_live_trades" not in st.session_state:
-    st.session_state.real_live_trades = {}
-
 NIFTY_50 = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LTIM.NS",
@@ -93,12 +90,13 @@ def calculate_vwap(df):
     return (tp * v).cumsum() / v.cumsum()
 
 # -----------------------------------------------------------------------------
-# REAL-TIME LIVE SCANNER & TRACKER
+# FULL DAY SCANNER (09:15 AM ONWARDS)
 # -----------------------------------------------------------------------------
-def run_live_scanner():
+def scan_full_day_market():
+    all_signals = []
+
     for symbol in NIFTY_50:
         try:
-            clean_symbol = symbol.replace(".NS", "")
             ticker = yf.Ticker(symbol)
             df = ticker.history(period="1d", interval="5m")
 
@@ -108,87 +106,90 @@ def run_live_scanner():
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['VWAP'] = calculate_vwap(df)
 
-            cmp_price = round(float(df["Close"].iloc[-1]), 2)
+            closes = df["Close"].values
+            highs = df["High"].values
+            lows = df["Low"].values
+            ema20 = df["EMA20"].values
+            vwap = df["VWAP"].values
+            timestamps = df.index
+            cmp_price = round(float(closes[-1]), 2)
 
-            # A. PEHLE SE SAVED LIVE TRADES KO UPDATE KARO (SL/TARGET CHECK)
-            if clean_symbol in st.session_state.real_live_trades:
-                trade = st.session_state.real_live_trades[clean_symbol]
-                
-                if trade["Status"] == "LIVE 🟡":
-                    trade["CMP"] = cmp_price
-                    if trade["Type"] == "BUY 🟢":
-                        if cmp_price >= trade["Target"]:
-                            trade["Status"] = "TARGET 🟢"
-                            trade["P&L (₹)"] = round(42.0 * trade["Qty"], 2)
-                        elif cmp_price <= trade["Stop Loss (SL)"]:
-                            trade["Status"] = "SL HIT 🔴"
-                            trade["P&L (₹)"] = round(-14.0 * trade["Qty"], 2)
+            # Subah 09:15 ki first candle ke baad scanning start (Index 20 se)
+            for i in range(20, len(df)):
+                curr_close = closes[i]
+                curr_high = highs[i]
+                curr_low = lows[i]
+                curr_ema = ema20[i]
+                curr_vwap = vwap[i]
+
+                signal_time = timestamps[i].strftime("%H:%M")
+
+                bullish_trend = curr_ema > curr_vwap
+                long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
+
+                bearish_trend = curr_ema < curr_vwap
+                short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
+
+                if long_pullback or short_pullback:
+                    trade_type = "BUY 🟢" if long_pullback else "SELL 🔴"
+                    entry = round(float(curr_close), 2)
+                    qty = max(1, int(CAPITAL_PER_STOCK / entry))
+
+                    # Fixed 14 points SL and 42 points Target
+                    if long_pullback:
+                        sl = round(entry - 14.0, 2)
+                        target = round(entry + 42.0, 2)
+                    else:
+                        sl = round(entry + 14.0, 2)
+                        target = round(entry - 42.0, 2)
+
+                    status = "LIVE 🟡"
+                    pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
+
+                    # Signal time se aage wali candles check karo exit status ke liye
+                    for j in range(i + 1, len(df)):
+                        if long_pullback:
+                            if lows[j] <= sl:
+                                status = "SL HIT 🔴"
+                                pnl = round(-14.0 * qty, 2)
+                                break
+                            elif highs[j] >= target:
+                                status = "TARGET 🟢"
+                                pnl = round(42.0 * qty, 2)
+                                break
                         else:
-                            trade["P&L (₹)"] = round((cmp_price - trade["Entry Price"]) * trade["Qty"], 2)
-                    else: # SELL Trade
-                        if cmp_price <= trade["Target"]:
-                            trade["Status"] = "TARGET 🟢"
-                            trade["P&L (₹)"] = round(42.0 * trade["Qty"], 2)
-                        elif cmp_price >= trade["Stop Loss (SL)"]:
-                            trade["Status"] = "SL HIT 🔴"
-                            trade["P&L (₹)"] = round(-14.0 * trade["Qty"], 2)
-                        else:
-                            trade["P&L (₹)"] = round((trade["Entry Price"] - cmp_price) * trade["Qty"], 2)
-                continue
+                            if highs[j] >= sl:
+                                status = "SL HIT 🔴"
+                                pnl = round(-14.0 * qty, 2)
+                                break
+                            elif lows[j] <= target:
+                                status = "TARGET 🟢"
+                                pnl = round(42.0 * qty, 2)
+                                break
 
-            # B. PURE LIVE SIGNAL DETECTION (Only check latest completed 5-min candle)
-            idx = -2 if len(df) > 1 else -1
-            curr_close = df["Close"].iloc[idx]
-            curr_high = df["High"].iloc[idx]
-            curr_low = df["Low"].iloc[idx]
-            curr_ema = df["EMA20"].iloc[idx]
-            curr_vwap = df["VWAP"].iloc[idx]
-            signal_time = df.index[idx].strftime("%H:%M")
+                    all_signals.append({
+                        "Time": signal_time,
+                        "Symbol": symbol.replace(".NS", ""),
+                        "Type": trade_type,
+                        "Qty": qty,
+                        "Entry Price": entry,
+                        "Stop Loss (SL)": sl,
+                        "Target": target,
+                        "CMP": cmp_price,
+                        "Status": status,
+                        "P&L (₹)": pnl
+                    })
 
-            bullish_trend = curr_ema > curr_vwap
-            long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
-
-            bearish_trend = curr_ema < curr_vwap
-            short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
-
-            if long_pullback or short_pullback:
-                trade_type = "BUY 🟢" if long_pullback else "SELL 🔴"
-                entry = round(float(curr_close), 2)
-                qty = max(1, int(CAPITAL_PER_STOCK / entry))
-
-                # Hardcoded Fixed Points: SL 14, Target 42
-                if long_pullback:
-                    sl = round(entry - 14.0, 2)
-                    target = round(entry + 42.0, 2)
-                    pnl = round((cmp_price - entry) * qty, 2)
-                else:
-                    sl = round(entry + 14.0, 2)
-                    target = round(entry - 42.0, 2)
-                    pnl = round((entry - cmp_price) * qty, 2)
-
-                # LOCK REAL TRADE IN MEMORY
-                st.session_state.real_live_trades[clean_symbol] = {
-                    "Time": signal_time,
-                    "Symbol": clean_symbol,
-                    "Type": trade_type,
-                    "Qty": qty,
-                    "Entry Price": entry,
-                    "Stop Loss (SL)": sl,
-                    "Target": target,
-                    "CMP": cmp_price,
-                    "Status": "LIVE 🟡",
-                    "P&L (₹)": pnl
-                }
+                    # Single trade lock per stock to avoid duplicate signals on same stock
+                    break
 
         except Exception:
             continue
 
-    if st.session_state.real_live_trades:
-        return pd.DataFrame(list(st.session_state.real_live_trades.values()))
-    return pd.DataFrame()
+    return pd.DataFrame(all_signals)
 
 # -----------------------------------------------------------------------------
-# DISPLAY DASHBOARD (EVERY 10 SECONDS REFRESH)
+# DISPLAY DASHBOARD
 # -----------------------------------------------------------------------------
 @st.fragment(run_every=10)
 def render_dashboard():
@@ -197,9 +198,9 @@ def render_dashboard():
     current_time = now_ist.strftime("%H:%M:%S")
 
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING REAL LIVE MARKET" if market_active else "🔴 MARKET CLOSED (09:15-15:30 IST)"
+    status_text = "🟢 SCANNING LIVE (09:15 - 15:30 IST)" if market_active else "🔴 MARKET CLOSED"
 
-    df_signals = run_live_scanner()
+    df_signals = scan_full_day_market()
 
     if not df_signals.empty:
         total_trades = len(df_signals)
@@ -224,12 +225,12 @@ def render_dashboard():
 
     st.markdown(f"""
         <div class="pnl-card">
-            📊 <b>Cap:</b> ₹50k | <b>Active Signals:</b> {live_trades} | <b>Total Signals:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades Today:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Pure Live Trade Signals")
+    st.markdown("### 📋 Today's Full Day Trades Log (09:15 AM - 03:30 PM)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -250,6 +251,6 @@ def render_dashboard():
             use_container_width=True,
         )
     else:
-        st.info("Abhi current LIVE market candle par koi Naya pullback signal nahi bana hai. Jaise hi signal banega yahan instantly lock ho jayega.")
+        st.info("Aaj subah 09:15 se lekar abhi tak kisi stock me EMA + VWAP Pullback signal nahi bana hai.")
 
 render_dashboard()
