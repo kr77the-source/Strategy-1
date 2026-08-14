@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -78,6 +78,14 @@ WATCHLIST = [
 
 TOTAL_CAPITAL = 50000.0
 CAPITAL_PER_STOCK = 12500.0  # ₹50,000 / 4 stocks
+
+# -----------------------------------------------------------------------------
+# MARKET HOURS CHECKER (09:15 AM to 03:30 PM IST)
+# -----------------------------------------------------------------------------
+def is_market_open(now_time):
+    start_time = time(9, 15)
+    end_time = time(15, 30)
+    return start_time <= now_time.time() <= end_time
 
 # -----------------------------------------------------------------------------
 # TECHNICAL INDICATOR HELPER FUNCTIONS
@@ -241,6 +249,10 @@ def render_dashboard():
     current_date = now_ist.strftime("%Y-%m-%d")
     current_time = now_ist.strftime("%H:%M:%S")
 
+    market_active = is_market_open(now_ist)
+    status_text = "🟢 SCANNING" if market_active else "🔴 MARKET CLOSED (09:15-15:30 IST)"
+
+    # Market open hone par hi naye trades scan karega
     df_signals = scan_and_lock_trades()
 
     if not df_signals.empty:
@@ -259,7 +271,7 @@ def render_dashboard():
     # Top Engine Status Header
     st.markdown(f"""
         <div class="status-card">
-            <b>Status:</b> 🟢 SCANNING | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
+            <b>Status:</b> {status_text} | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
         </div>
     """, unsafe_allow_html=True)
 
