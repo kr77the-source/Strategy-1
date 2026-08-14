@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Intraday Scanner (14 SL / 30 Target)", layout="wide")
+st.set_page_config(page_title="Intraday Scanner (ATR based SL/Target)", layout="wide")
 
 st.markdown("""
     <style>
@@ -49,6 +49,7 @@ st.markdown("""
     .badge-sqoff  { background-color: #90A4AE30; color: #CFD8DC; }
     .badge-buy    { background-color: #4CAF5030; color: #4CAF50; }
     .badge-sell   { background-color: #FF525230; color: #FF5252; }
+    .badge-skip   { background-color: #78909C30; color: #B0BEC5; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -78,7 +79,7 @@ UNDER_300_WATCHLIST = [
 HISTORY_FILE = "trade_history.csv"
 HISTORY_COLUMNS = [
     "Date", "Time", "Symbol", "Type", "Qty", "Entry", "SL", "Target",
-    "Exit", "Status", "GrossPnL", "Charges", "NetPnL"
+    "Exit", "Status", "GrossPnL", "Charges", "NetPnL", "ATR"
 ]
 
 
@@ -98,25 +99,37 @@ def append_history(row: dict):
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR SETTINGS — SL/Target back to fixed POINTS (14 / 30), adjustable
+# SIDEBAR SETTINGS
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
     TOTAL_CAPITAL = st.number_input("Total Capital (Rs)", value=50000, step=5000)
     MAX_ACTIVE_TRADES = st.number_input("Max Active Trades", value=4, min_value=1, max_value=10)
-    SL_POINTS = st.number_input("Stop Loss (points)", value=14.0, step=1.0)
-    TARGET_POINTS = st.number_input("Target (points)", value=30.0, step=1.0)
-    st.caption(f"Risk:Reward = 1 : {round(TARGET_POINTS/SL_POINTS, 2)}")
+
+    st.subheader("ATR-based SL / Target")
+    st.caption("SL and Target scale with each stock's own recent volatility (14-period ATR on 5-min candles).")
+    SL_ATR_MULT = st.number_input("SL = ATR x", value=1.0, step=0.1, format="%.1f")
+    TARGET_ATR_MULT = st.number_input("Target = ATR x", value=2.0, step=0.1, format="%.1f")
+    st.caption(f"Risk:Reward = 1 : {round(TARGET_ATR_MULT/SL_ATR_MULT, 2)}")
+
+    st.subheader("Stock filter (avoid dead / illiquid stocks)")
+    MIN_ATR_PCT = st.number_input("Min ATR as % of price", value=1.5, step=0.1, format="%.1f") / 100
+    st.caption("Stocks whose ATR is below this % of price are skipped for the day â€” they rarely move enough to hit target.")
+
+    st.subheader("Overtrading control")
+    ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox("Max 1 trade per stock per day", value=True)
 
     if st.button("Reset TODAY's live signals (keeps history file)"):
         st.session_state.trade_log = {}
         st.session_state.processed_keys = set()
+        st.session_state.traded_today = set()
 
     if st.button("Delete ALL saved history (irreversible)"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         st.session_state.trade_log = {}
         st.session_state.processed_keys = set()
+        st.session_state.traded_today = set()
 
 CAPITAL_PER_STOCK = TOTAL_CAPITAL / MAX_ACTIVE_TRADES
 
@@ -124,6 +137,8 @@ if "trade_log" not in st.session_state:
     st.session_state.trade_log = {}
 if "processed_keys" not in st.session_state:
     st.session_state.processed_keys = set()
+if "traded_today" not in st.session_state:
+    st.session_state.traded_today = set()  # set of (symbol, date) already traded
 
 
 def is_market_open(now_dt):
@@ -136,22 +151,28 @@ def calculate_vwap(df):
     return (tp * v).cumsum() / np.maximum(v.cumsum(), 1)
 
 
-# -----------------------------------------------------------------------------
-# INTRADAY EQUITY CHARGES (all-in: brokerage + STT + exchange + GST + stamp + SEBI)
-# STT applies only on the SELL leg for intraday equity (0.025%).
-# SEBI turnover fee corrected: Rs 10 per crore of turnover = 0.0001% (was 10x too low before).
-# -----------------------------------------------------------------------------
+def calculate_atr(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.rolling(period, min_periods=period).mean()
+
+
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
     total_turnover = buy_turnover + sell_turnover
 
     brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
-    stt = sell_turnover * 0.00025                      # 0.025% intraday, sell side only
-    exchange_charges = total_turnover * 0.0000297       # NSE transaction charges
-    gst = (brokerage + exchange_charges) * 0.18         # 18% GST on brokerage + exchange charges
-    stamp_duty = buy_turnover * 0.00003                 # 0.003% intraday, buy side only
-    sebi_charges = total_turnover * 0.000001            # Rs 10 / crore = 0.0001% (FIXED)
+    stt = sell_turnover * 0.00025
+    exchange_charges = total_turnover * 0.0000297
+    gst = (brokerage + exchange_charges) * 0.18
+    stamp_duty = buy_turnover * 0.00003
+    sebi_charges = total_turnover * 0.000001
 
     return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
@@ -202,11 +223,13 @@ def scan_and_update():
             df = df.copy()
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
             df["VWAP"] = calculate_vwap(df)
+            df["ATR"] = calculate_atr(df, 14)
 
             closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
-            ema20, vwap = df["EMA20"].values, df["VWAP"].values
+            ema20, vwap, atr = df["EMA20"].values, df["VWAP"].values, df["ATR"].values
             timestamps = df.index
 
+            # --- Update LIVE trades ---
             for key, trade in list(st.session_state.trade_log.items()):
                 if trade["SymbolRaw"] != symbol or trade["Status"] != "LIVE":
                     continue
@@ -249,11 +272,13 @@ def scan_and_update():
                         "Date": today_str, "Time": trade["Time"], "Symbol": trade["Symbol"],
                         "Type": trade["TypeLabel"], "Qty": trade["Qty"], "Entry": trade["Entry"],
                         "SL": sl, "Target": target, "Exit": trade["CMP/Exit"],
-                        "Status": trade["Status"], "GrossPnL": gross, "Charges": est_tax, "NetPnL": net,
+                        "Status": trade["Status"], "GrossPnL": gross, "Charges": est_tax,
+                        "NetPnL": net, "ATR": trade.get("ATRVal", None),
                     })
                 else:
                     trade["Tax"], trade["Net P&L"] = None, None
 
+            # --- Detect NEW signals ---
             for i in range(20, len(df)):
                 t_str = timestamps[i].strftime("%H:%M")
                 if t_str >= "15:15":
@@ -264,8 +289,20 @@ def scan_and_update():
                     continue
                 st.session_state.processed_keys.add(candle_key)
 
+                curr_atr = atr[i]
+                if np.isnan(curr_atr) or curr_atr <= 0:
+                    continue
+
                 curr_close, curr_high, curr_low = closes[i], highs[i], lows[i]
                 curr_ema, curr_vwap = ema20[i], vwap[i]
+
+                # Volatility filter: skip stocks whose ATR is too small relative to price
+                if curr_atr < curr_close * MIN_ATR_PCT:
+                    continue
+
+                # One trade per stock per day
+                if ONE_TRADE_PER_STOCK_PER_DAY and (symbol, today_str) in st.session_state.traded_today:
+                    continue
 
                 bullish = curr_ema > curr_vwap
                 long_pullback = bullish and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -280,8 +317,10 @@ def scan_and_update():
                 is_long = long_pullback
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(CAPITAL_PER_STOCK / entry))
-                sl = round(entry - SL_POINTS, 2) if is_long else round(entry + SL_POINTS, 2)
-                target = round(entry + TARGET_POINTS, 2) if is_long else round(entry - TARGET_POINTS, 2)
+                sl_dist = round(curr_atr * SL_ATR_MULT, 2)
+                target_dist = round(curr_atr * TARGET_ATR_MULT, 2)
+                sl = round(entry - sl_dist, 2) if is_long else round(entry + sl_dist, 2)
+                target = round(entry + target_dist, 2) if is_long else round(entry - target_dist, 2)
 
                 st.session_state.trade_log[candle_key] = {
                     "SymbolRaw": symbol, "EntryIdx": i, "IsLong": is_long,
@@ -290,7 +329,10 @@ def scan_and_update():
                     "Qty": qty, "Entry": entry, "SL": sl, "Target": target,
                     "Status": "LIVE", "CMP/Exit": entry,
                     "Gross P&L": 0.0, "Tax": None, "Net P&L": None,
+                    "ATRVal": round(float(curr_atr), 2),
                 }
+                if ONE_TRADE_PER_STOCK_PER_DAY:
+                    st.session_state.traded_today.add((symbol, today_str))
         except Exception:
             continue
 
@@ -354,6 +396,7 @@ def render_dashboard():
             rows.append({
                 "Time": t["Time"], "Symbol": t["Symbol"], "Type": badge(t["TypeLabel"], type_cls),
                 "Qty": t["Qty"], "Entry": t["Entry"], "SL": t["SL"], "Target": t["Target"],
+                "ATR": t.get("ATRVal", "-"),
                 "CMP/Exit": t["CMP/Exit"], "Status": badge(label, cls),
                 "Gross P&L": t["Gross P&L"], "Net P&L": t["Net P&L"] if t["Net P&L"] is not None else "-",
             })
@@ -372,11 +415,11 @@ def render_dashboard():
 
 
 # -----------------------------------------------------------------------------
-# BACKTEST: last 60 days (yfinance max for 5-min candles), same fixed-point
-# SL/Target logic as live. VWAP resets every day.
+# BACKTEST: last 60 days, ATR-based SL/Target, volatility filter,
+# one-trade-per-stock-per-day cooldown â€” same rules as live.
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_backtest(sl_points, target_points, capital_per_stock, symbols):
+def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, capital_per_stock, symbols):
     try:
         data = yf.download(
             tickers=" ".join(symbols),
@@ -406,19 +449,33 @@ def run_backtest(sl_points, target_points, capital_per_stock, symbols):
 
             day_df["EMA20"] = day_df["Close"].ewm(span=20, adjust=False).mean()
             day_df["VWAP"] = calculate_vwap(day_df)
+            day_df["ATR"] = calculate_atr(day_df, 14)
 
             closes, highs, lows = day_df["Close"].values, day_df["High"].values, day_df["Low"].values
-            ema20, vwap = day_df["EMA20"].values, day_df["VWAP"].values
+            ema20, vwap, atr = day_df["EMA20"].values, day_df["VWAP"].values, day_df["ATR"].values
             timestamps = day_df.index
 
+            traded_this_day = False
             i = 20
             while i < len(day_df):
                 t_str = timestamps[i].strftime("%H:%M")
                 if t_str >= "15:15":
                     break
 
+                if one_per_day and traded_this_day:
+                    break
+
+                curr_atr = atr[i]
+                if np.isnan(curr_atr) or curr_atr <= 0:
+                    i += 1
+                    continue
+
                 curr_close, curr_high, curr_low = closes[i], highs[i], lows[i]
                 curr_ema, curr_vwap = ema20[i], vwap[i]
+
+                if curr_atr < curr_close * min_atr_pct:
+                    i += 1
+                    continue
 
                 bullish = curr_ema > curr_vwap
                 long_pullback = bullish and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -432,8 +489,10 @@ def run_backtest(sl_points, target_points, capital_per_stock, symbols):
                 is_long = long_pullback
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(capital_per_stock / entry))
-                sl = round(entry - sl_points, 2) if is_long else round(entry + sl_points, 2)
-                target = round(entry + target_points, 2) if is_long else round(entry - target_points, 2)
+                sl_dist = round(curr_atr * sl_atr_mult, 2)
+                target_dist = round(curr_atr * target_atr_mult, 2)
+                sl = round(entry - sl_dist, 2) if is_long else round(entry + sl_dist, 2)
+                target = round(entry + target_dist, 2) if is_long else round(entry - target_dist, 2)
 
                 status, exit_price = "SQOFF", entry
                 exit_j = len(day_df) - 1
@@ -463,25 +522,28 @@ def run_backtest(sl_points, target_points, capital_per_stock, symbols):
                     "Date": str(day), "Time": t_str, "Symbol": symbol.replace(".NS", ""),
                     "Type": "BUY" if is_long else "SELL", "Qty": qty, "Entry": entry,
                     "SL": sl, "Target": target, "Exit": exit_price, "Status": status,
-                    "GrossPnL": gross, "Charges": charges, "NetPnL": net,
+                    "GrossPnL": gross, "Charges": charges, "NetPnL": net, "ATR": round(float(curr_atr), 2),
                 })
 
+                traded_this_day = True
                 i = exit_j + 1
 
     return pd.DataFrame(all_trades)
 
 
 def render_backtest_tab():
-    st.markdown("### Backtest (last 60 days — max 5-min history yfinance allows)")
+    st.markdown("### Backtest (last 60 days, ATR-based SL/Target)")
     st.caption(
-        "Yahoo Finance sirf pichhle ~60 din ka 5-min data deta hai — 6 mahine ka poora "
-        "5-min data koi free source nahi deta, isliye ye sabse accurate available option hai. "
-        "VWAP har din reset hota hai, aur SL/Target ab fixed POINTS (sidebar se set) pe based hain."
+        "Ab SL/Target har stock ki apni volatility (ATR) ke hisab se set hote hain, "
+        "kam-ATR wale stocks skip hote hain, aur (agar checkbox on hai) ek stock me din me sirf 1 trade lagti hai."
     )
 
     if st.button("Run Backtest"):
         with st.spinner("Backtest chal raha hai, thoda time lagega..."):
-            bt_df = run_backtest(SL_POINTS, TARGET_POINTS, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST)
+            bt_df = run_backtest(
+                SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT,
+                ONE_TRADE_PER_STOCK_PER_DAY, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST
+            )
         st.session_state.backtest_result = bt_df
 
     bt_df = st.session_state.get("backtest_result")
@@ -491,7 +553,7 @@ def render_backtest_tab():
         return
 
     if bt_df.empty:
-        st.warning("Koi trade nahi mila is period me in settings ke saath.")
+        st.warning("Koi trade nahi mila is period me in settings ke saath â€” filter shayad zyada strict hai.")
         return
 
     total_trades = len(bt_df)
@@ -499,6 +561,7 @@ def render_backtest_tab():
     sl_hits = len(bt_df[bt_df["Status"] == "SL"])
     sqoff = len(bt_df[bt_df["Status"] == "SQOFF"])
     win_rate = round((targets / total_trades) * 100, 1) if total_trades else 0.0
+    sqoff_rate = round((sqoff / total_trades) * 100, 1) if total_trades else 0.0
     total_gross = round(bt_df["GrossPnL"].sum(), 2)
     total_charges = round(bt_df["Charges"].sum(), 2)
     total_net = round(bt_df["NetPnL"].sum(), 2)
@@ -509,13 +572,20 @@ def render_backtest_tab():
     st.markdown(f"""
         <div class="pnl-card">
             <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets} ({win_rate}%) |
-            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff}<br><br>
+            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff} ({sqoff_rate}%)<br><br>
             <b>Gross P&L:</b> {RUPEE}{total_gross} |
             <b>Total Charges:</b> {RUPEE}{total_charges} |
             <b>Net P&L:</b> <span style="color:{net_color}; font-weight:bold;">{RUPEE}{total_net}</span><br>
             <b>Avg Net P&L / trade:</b> {RUPEE}{avg_net_per_trade}
         </div>
     """, unsafe_allow_html=True)
+
+    if sqoff_rate > 50:
+        st.warning(
+            f"Abhi bhi {sqoff_rate}% trades sirf auto sq-off ho rahe hain (na target na SL). "
+            "Ye batata hai ki ATR multiplier bahut wide hai, ya MIN_ATR_PCT filter dheela hai. "
+            "SL/Target multiplier kam karke ya MIN_ATR_PCT badha ke dekho."
+        )
 
     daily = bt_df.groupby("Date")["NetPnL"].sum().reset_index()
     daily["CumulativeNetPnL"] = daily["NetPnL"].cumsum()
@@ -526,6 +596,15 @@ def render_backtest_tab():
     st.markdown("#### Equity Curve (cumulative Net P&L)")
     st.line_chart(daily.set_index("Date")["CumulativeNetPnL"])
 
+    st.markdown("#### Per-stock performance")
+    per_stock = bt_df.groupby("Symbol").agg(
+        Trades=("NetPnL", "count"),
+        Targets=("Status", lambda s: (s == "TARGET").sum()),
+        SLHits=("Status", lambda s: (s == "SL").sum()),
+        NetPnL=("NetPnL", "sum"),
+    ).reset_index().sort_values("NetPnL", ascending=False)
+    st.dataframe(per_stock, use_container_width=True)
+
     with st.expander("All backtest trades"):
         st.dataframe(bt_df.iloc[::-1], use_container_width=True)
         st.download_button("Download backtest CSV", data=bt_df.to_csv(index=False),
@@ -535,7 +614,7 @@ def render_backtest_tab():
 # -----------------------------------------------------------------------------
 # MAIN LAYOUT
 # -----------------------------------------------------------------------------
-st.markdown("### INTRADAY SCANNER (14 SL / 30 Target)")
+st.markdown("### INTRADAY SCANNER (ATR based SL / Target)")
 tab_live, tab_backtest = st.tabs(["Live Dashboard", "Backtest"])
 
 with tab_live:
