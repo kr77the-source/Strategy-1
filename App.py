@@ -2,7 +2,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 from zoneinfo import ZoneInfo
 
@@ -12,9 +11,6 @@ from zoneinfo import ZoneInfo
 st.set_page_config(
     page_title="20 EMA + VWAP Pullback Live Dashboard", layout="wide"
 )
-
-# Auto refresh every 10 seconds
-st_autorefresh(interval=10000, key="datarefresh")
 
 # -----------------------------------------------------------------------------
 # CUSTOM CSS: REMOVE GAPS & REDUCE FONT SIZES
@@ -74,11 +70,6 @@ st.markdown("""
 
 st.markdown("### 🎯 20 EMA + VWAP Pullback Dashboard")
 
-now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-current_date = now_ist.strftime("%Y-%m-%d")
-current_time = now_ist.strftime("%H:%M:%S")
-
-# 4 Stocks Selected for Trading (Budget ₹12,500 each = ₹50,000 total)
 WATCHLIST = [
     "RELIANCE.NS",
     "TCS.NS",
@@ -140,7 +131,7 @@ def scan_and_lock_trades():
             atr14 = df["ATR14"].values
             timestamps = df.index
 
-            trade_active = False  # Ensure single active trade per stock
+            trade_active = False
 
             for i in range(20, len(df)):
                 if trade_active:
@@ -159,11 +150,9 @@ def scan_and_lock_trades():
 
                 signal_time = timestamps[i].strftime("%H:%M")
 
-                # 🟢 LONG TRIGGER: 20 EMA > VWAP & Pullback to 20 EMA
                 bullish_trend = curr_ema > curr_vwap
                 long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
 
-                # 🔴 SHORT TRIGGER: 20 EMA < VWAP & Pullback to 20 EMA
                 bearish_trend = curr_ema < curr_vwap
                 short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
 
@@ -179,7 +168,6 @@ def scan_and_lock_trades():
                     cmp_price = round(float(closes[-1]), 2)
                     final_pnl = round((cmp_price - entry) * qty, 2)
 
-                    # Check future candles for SL/TP exit
                     for j in range(i + 1, len(df)):
                         if lows[j] <= sl:
                             final_status = "SL HIT 🔴"
@@ -216,7 +204,6 @@ def scan_and_lock_trades():
                     cmp_price = round(float(closes[-1]), 2)
                     final_pnl = round((entry - cmp_price) * qty, 2)
 
-                    # Check future candles for SL/TP exit
                     for j in range(i + 1, len(df)):
                         if highs[j] >= sl:
                             final_status = "SL HIT 🔴"
@@ -247,57 +234,66 @@ def scan_and_lock_trades():
     return pd.DataFrame(all_signals)
 
 # -----------------------------------------------------------------------------
-# DISPLAY METRICS & STREAMLIT DASHBOARD
+# LIVE DASHBOARD FRAGMENT (AUTO REFRESH EVERY 10 SECONDS)
 # -----------------------------------------------------------------------------
-df_signals = scan_and_lock_trades()
+@st.fragment(run_every=10)
+def render_dashboard():
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    current_date = now_ist.strftime("%Y-%m-%d")
+    current_time = now_ist.strftime("%H:%M:%S")
 
-if not df_signals.empty:
-    total_trades = len(df_signals)
-    targets_hit = len(df_signals[df_signals["Status"].str.contains("TARGET")])
-    sl_hit = len(df_signals[df_signals["Status"].str.contains("SL HIT")])
-    overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
-else:
-    total_trades = 0
-    targets_hit = 0
-    sl_hit = 0
-    overall_pnl = 0.0
+    df_signals = scan_and_lock_trades()
 
-pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
+    if not df_signals.empty:
+        total_trades = len(df_signals)
+        targets_hit = len(df_signals[df_signals["Status"].str.contains("TARGET")])
+        sl_hit = len(df_signals[df_signals["Status"].str.contains("SL HIT")])
+        overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
+    else:
+        total_trades = 0
+        targets_hit = 0
+        sl_hit = 0
+        overall_pnl = 0.0
 
-# Top Engine Status Header
-st.markdown(f"""
-    <div class="status-card">
-        <b>Status:</b> 🟢 SCANNING | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
-    </div>
-""", unsafe_allow_html=True)
+    pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
 
-# Performance P&L Summary Card
-st.markdown(f"""
-    <div class="pnl-card">
-        📊 <b>Cap:</b> ₹50k | <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
-    </div>
-""", unsafe_allow_html=True)
+    # Top Engine Status Header
+    st.markdown(f"""
+        <div class="status-card">
+            <b>Status:</b> 🟢 SCANNING | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
+        </div>
+    """, unsafe_allow_html=True)
 
-st.markdown("---")
-st.markdown("### 📋 Trades Log")
+    # Performance P&L Summary Card
+    st.markdown(f"""
+        <div class="pnl-card">
+            📊 <b>Cap:</b> ₹50k | <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+        </div>
+    """, unsafe_allow_html=True)
 
-if not df_signals.empty:
-    st.dataframe(
-        df_signals[
-            [
-                "Time",
-                "Symbol",
-                "Type",
-                "Qty",
-                "Entry Price",
-                "Stop Loss (SL)",
-                "Target",
-                "CMP",
-                "Status",
-                "P&L (₹)"
-            ]
-        ],
-        use_container_width=True,
-    )
-else:
-    st.info("Abhi tak koi valid trade setup nahi mila hai.")
+    st.markdown("---")
+    st.markdown("### 📋 Trades Log")
+
+    if not df_signals.empty:
+        st.dataframe(
+            df_signals[
+                [
+                    "Time",
+                    "Symbol",
+                    "Type",
+                    "Qty",
+                    "Entry Price",
+                    "Stop Loss (SL)",
+                    "Target",
+                    "CMP",
+                    "Status",
+                    "P&L (₹)"
+                ]
+            ],
+            use_container_width=True,
+        )
+    else:
+        st.info("Abhi tak koi valid trade setup nahi mila hai.")
+
+# Trigger Fragment Render
+render_dashboard()
