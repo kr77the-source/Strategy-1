@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="20 EMA + VWAP Full Day Live Dashboard", layout="wide"
+    page_title="20 EMA + VWAP Auto Square-Off Dashboard", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 20 EMA + VWAP Full Day (09:15 - 15:30) Dashboard")
+st.markdown("### 🎯 20 EMA + VWAP Dashboard (3:20 PM Auto Square-Off)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST & CONFIG
@@ -90,7 +90,7 @@ def calculate_vwap(df):
     return (tp * v).cumsum() / v.cumsum()
 
 # -----------------------------------------------------------------------------
-# FULL DAY SCANNER (09:15 AM ONWARDS)
+# FULL DAY SCANNER WITH AUTO SQUARE-OFF AT 3:20 PM
 # -----------------------------------------------------------------------------
 def scan_full_day_market():
     all_signals = []
@@ -114,15 +114,19 @@ def scan_full_day_market():
             timestamps = df.index
             cmp_price = round(float(closes[-1]), 2)
 
-            # Subah 09:15 ki first candle ke baad scanning start (Index 20 se)
+            # Subah 09:15 ki candles ke baad scanning start
             for i in range(20, len(df)):
+                candle_time_str = timestamps[i].strftime("%H:%M")
+                
+                # 3:20 PM ke baad koi NAYI trade trigger nahi hogi
+                if candle_time_str >= "15:20":
+                    break
+
                 curr_close = closes[i]
                 curr_high = highs[i]
                 curr_low = lows[i]
                 curr_ema = ema20[i]
                 curr_vwap = vwap[i]
-
-                signal_time = timestamps[i].strftime("%H:%M")
 
                 bullish_trend = curr_ema > curr_vwap
                 long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -135,7 +139,7 @@ def scan_full_day_market():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    # Fixed 14 points SL and 42 points Target
+                    # Target (+42 pts), SL (-14 pts)
                     if long_pullback:
                         sl = round(entry - 14.0, 2)
                         target = round(entry + 42.0, 2)
@@ -146,29 +150,39 @@ def scan_full_day_market():
                     status = "LIVE 🟡"
                     pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
 
-                    # Signal time se aage wali candles check karo exit status ke liye
+                    # Signal ke baad wali candles par checking (Exit Logic)
                     for j in range(i + 1, len(df)):
-                        if long_pullback:
-                            if lows[j] <= sl:
-                                status = "SL HIT 🔴"
-                                pnl = round(-14.0 * qty, 2)
-                                break
-                            elif highs[j] >= target:
-                                status = "TARGET 🟢"
-                                pnl = round(42.0 * qty, 2)
-                                break
-                        else:
-                            if highs[j] >= sl:
-                                status = "SL HIT 🔴"
-                                pnl = round(-14.0 * qty, 2)
-                                break
-                            elif lows[j] <= target:
-                                status = "TARGET 🟢"
-                                pnl = round(42.0 * qty, 2)
-                                break
+                        check_time_str = timestamps[j].strftime("%H:%M")
+
+                        # 1. Target Hit Check
+                        if long_pullback and highs[j] >= target:
+                            status = "TARGET 🟢"
+                            pnl = round(42.0 * qty, 2)
+                            break
+                        elif not long_pullback and lows[j] <= target:
+                            status = "TARGET 🟢"
+                            pnl = round(42.0 * qty, 2)
+                            break
+
+                        # 2. SL Hit Check
+                        if long_pullback and lows[j] <= sl:
+                            status = "SL HIT 🔴"
+                            pnl = round(-14.0 * qty, 2)
+                            break
+                        elif not long_pullback and highs[j] >= sl:
+                            status = "SL HIT 🔴"
+                            pnl = round(-14.0 * qty, 2)
+                            break
+
+                        # 3. 3:20 PM Auto Square-Off Check
+                        if check_time_str >= "15:20":
+                            status = "AUTO SQ OFF ⚪"
+                            exit_p = round(float(closes[j]), 2)
+                            pnl = round((exit_p - entry) * qty, 2) if long_pullback else round((entry - exit_p) * qty, 2)
+                            break
 
                     all_signals.append({
-                        "Time": signal_time,
+                        "Time": candle_time_str,
                         "Symbol": symbol.replace(".NS", ""),
                         "Type": trade_type,
                         "Qty": qty,
@@ -180,7 +194,7 @@ def scan_full_day_market():
                         "P&L (₹)": pnl
                     })
 
-                    # Single trade lock per stock to avoid duplicate signals on same stock
+                    # Unique signal per stock
                     break
 
         except Exception:
@@ -198,21 +212,23 @@ def render_dashboard():
     current_time = now_ist.strftime("%H:%M:%S")
 
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING LIVE (09:15 - 15:30 IST)" if market_active else "🔴 MARKET CLOSED"
+    status_text = "🟢 SCANNING LIVE MARKET" if market_active else "🔴 MARKET CLOSED (AUTO SQ OFF DONE)"
 
     df_signals = scan_full_day_market()
 
     if not df_signals.empty:
         total_trades = len(df_signals)
-        live_trades = len(df_signals[df_signals["Status"].str.contains("LIVE")])
-        targets_hit = len(df_signals[df_signals["Status"].str.contains("TARGET")])
-        sl_hit = len(df_signals[df_signals["Status"].str.contains("SL HIT")])
+        live_trades = len(df_signals[df_signals["Status"] == "LIVE 🟡"])
+        targets_hit = len(df_signals[df_signals["Status"] == "TARGET 🟢"])
+        sl_hit = len(df_signals[df_signals["Status"] == "SL HIT 🔴"])
+        auto_sq_off = len(df_signals[df_signals["Status"] == "AUTO SQ OFF ⚪"])
         overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
     else:
         total_trades = 0
         live_trades = 0
         targets_hit = 0
         sl_hit = 0
+        auto_sq_off = 0
         overall_pnl = 0.0
 
     pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
@@ -225,12 +241,12 @@ def render_dashboard():
 
     st.markdown(f"""
         <div class="pnl-card">
-            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades Today:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades Today:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>SQ-OFF (3:20):</b> {auto_sq_off} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Today's Full Day Trades Log (09:15 AM - 03:30 PM)")
+    st.markdown("### 📋 Today's Trades Log (09:15 AM - 03:20 PM)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -251,6 +267,6 @@ def render_dashboard():
             use_container_width=True,
         )
     else:
-        st.info("Aaj subah 09:15 se lekar abhi tak kisi stock me EMA + VWAP Pullback signal nahi bana hai.")
+        st.info("Aaj koi valid setup nahi bana hai.")
 
 render_dashboard()
