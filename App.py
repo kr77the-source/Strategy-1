@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="20 EMA + VWAP Auto Square-Off Dashboard", layout="wide"
+    page_title="REAL LIVE Intraday Scanner (Under ₹300)", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,22 +57,36 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 20 EMA + VWAP Dashboard (Auto Sq-Off P&L)")
+st.markdown("### 🔴 REAL-TIME LIVE INTRADAY DASHBOARD (50 Stocks Under ₹300)")
 
 # -----------------------------------------------------------------------------
-# WATCHLIST & CONFIG
+# WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
 # -----------------------------------------------------------------------------
-NIFTY_50 = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LTIM.NS",
-    "KOTAKBANK.NS", "LT.NS", "AXISBANK.NS", "HCLTECH.NS", "ASIANPAINT.NS",
-    "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "BAJFINANCE.NS", "TATAMOTORS.NS",
-    "ULTRACEMCO.NS", "NTPC.NS", "ONGC.NS", "POWERGRID.NS", "TATASTEEL.NS",
-    "ADANIENT.NS", "ADANIPORTS.NS", "COALINDIA.NS", "BAJAJFINSV.NS", "M&M.NS",
-    "GRASIM.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "BPCL.NS", "DIVISLAB.NS",
-    "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "TATACONSUM.NS", "BRITANNIA.NS",
-    "SBILIFE.NS", "HDFCLIFE.NS", "BAJAJ-AUTO.NS", "INDUSINDBK.NS", "TECHM.NS",
-    "HINDALCO.NS", "JSWSTEEL.NS", "BEL.NS", "TRENT.NS", "SHRIRAMFIN.NS"
+UNDER_300_WATCHLIST = [
+    # Banking & Financials
+    "PNB.NS", "BANKBARODA.NS", "CANBK.NS", "UNIONBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANDHANBNK.NS",
+    # Power & Energy
+    "POWERGRID.NS", "NHPC.NS", "SJVN.NS", "NLCINDIA.NS", "CESC.NS",
+    # Oil & Gas
+    "ONGC.NS", "IOC.NS", "GAIL.NS", "PETRONET.NS", "OIL.NS",
+    # Metals & Mining
+    "TATASTEEL.NS", "SAIL.NS", "NMDC.NS", "VEDL.NS", "NATIONALUM.NS",
+    # Railway & Infra
+    "RVNL.NS", "IRFC.NS", "IRCON.NS", "NBCC.NS", "HUDCO.NS",
+    # Auto Ancillary
+    "MOTHERSON.NS", "CASTROLIND.NS", "EXIDEIND.NS", "ARE&M.NS",
+    # IT & Telecom
+    "WIPRO.NS", "HFCL.NS", "FSL.NS", "ITI.NS",
+    # Pharma
+    "PIRPHARMA.NS", "BIOCON.NS", "GLENMARK.NS",
+    # Capital Goods & Defense
+    "BEL.NS", "BHEL.NS",
+    # Finance & Logistics
+    "MANAPPURAM.NS", "REDINGTON.NS", "IDFC.NS",
+    # Textiles & Real Estate
+    "TRIDENT.NS", "ALOKINDS.NS",
+    # Fertilizer & Chemicals
+    "GSFC.NS", "GNFC.NS", "FACT.NS", "RCF.NS", "NFL.NS"
 ]
 
 TOTAL_CAPITAL = 50000.0
@@ -89,15 +103,23 @@ def calculate_vwap(df):
     tp = (df['High'] + df['Low'] + df['Close']) / 3
     return (tp * v).cumsum() / v.cumsum()
 
+def calculate_atr(df, period=14):
+    high_low = df['High'] - df['Low']
+    high_close = np.abs(df['High'] - df['Close'].shift())
+    low_close = np.abs(df['Low'] - df['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
 # -----------------------------------------------------------------------------
-# FULL DAY SCANNER WITH AUTO SQ-OFF PROFIT/LOSS TRACKER
+# REAL-TIME LIVE SCANNER LOGIC
 # -----------------------------------------------------------------------------
-def scan_full_day_market():
+def fetch_live_signals():
     all_signals = []
 
-    for symbol in NIFTY_50:
+    for symbol in UNDER_300_WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
+            # Direct Real-Time 5m Data Fetch
             df = ticker.history(period="1d", interval="5m")
 
             if df.empty or len(df) < 20:
@@ -105,20 +127,23 @@ def scan_full_day_market():
 
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['VWAP'] = calculate_vwap(df)
+            df['ATR'] = calculate_atr(df, period=14)
 
             closes = df["Close"].values
             highs = df["High"].values
             lows = df["Low"].values
             ema20 = df["EMA20"].values
             vwap = df["VWAP"].values
+            atrs = df["ATR"].values
             timestamps = df.index
+            
+            # Real-time Last CMP
             cmp_price = round(float(closes[-1]), 2)
 
             for i in range(20, len(df)):
                 candle_time_str = timestamps[i].strftime("%H:%M")
                 
-                # 3:20 PM ke baad naye signal trigger nahi honge
-                if candle_time_str >= "15:20":
+                if candle_time_str >= "15:15":
                     break
 
                 curr_close = closes[i]
@@ -126,6 +151,10 @@ def scan_full_day_market():
                 curr_low = lows[i]
                 curr_ema = ema20[i]
                 curr_vwap = vwap[i]
+                curr_atr = atrs[i]
+
+                if np.isnan(curr_atr) or curr_atr == 0:
+                    curr_atr = curr_close * 0.005
 
                 bullish_trend = curr_ema > curr_vwap
                 long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -138,50 +167,46 @@ def scan_full_day_market():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
+                    # REAL DYNAMIC BUFFER ATR LOGIC
+                    sl_dist = round(float(curr_atr + (entry * 0.0025)), 2)
+                    target_dist = round(float(sl_dist * 1.20), 2)
+
                     if long_pullback:
-                        sl = round(entry - 14.0, 2)
-                        target = round(entry + 42.0, 2)
+                        sl = round(entry - sl_dist, 2)
+                        target = round(entry + target_dist, 2)
                     else:
-                        sl = round(entry + 14.0, 2)
-                        target = round(entry - 42.0, 2)
+                        sl = round(entry + sl_dist, 2)
+                        target = round(entry - target_dist, 2)
 
                     status = "LIVE 🟡"
                     pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
 
-                    # Exit checking loop
+                    # Check historical progression inside today's session
                     for j in range(i + 1, len(df)):
                         check_time_str = timestamps[j].strftime("%H:%M")
 
-                        # 1. Target Hit
                         if long_pullback and highs[j] >= target:
                             status = "TARGET 🟢"
-                            pnl = round(42.0 * qty, 2)
+                            pnl = round(target_dist * qty, 2)
                             break
                         elif not long_pullback and lows[j] <= target:
                             status = "TARGET 🟢"
-                            pnl = round(42.0 * qty, 2)
+                            pnl = round(target_dist * qty, 2)
                             break
 
-                        # 2. SL Hit
                         if long_pullback and lows[j] <= sl:
                             status = "SL HIT 🔴"
-                            pnl = round(-14.0 * qty, 2)
+                            pnl = round(-sl_dist * qty, 2)
                             break
                         elif not long_pullback and highs[j] >= sl:
                             status = "SL HIT 🔴"
-                            pnl = round(-14.0 * qty, 2)
+                            pnl = round(-sl_dist * qty, 2)
                             break
 
-                        # 3. 3:20 PM Auto Square-Off (Exit Price Calculation)
                         if check_time_str >= "15:20":
                             status = "AUTO SQ OFF ⚪"
                             exit_price = round(float(closes[j]), 2)
-                            
-                            # Exact Sq-Off PnL
-                            if long_pullback:
-                                pnl = round((exit_price - entry) * qty, 2)
-                            else:
-                                pnl = round((entry - exit_price) * qty, 2)
+                            pnl = round((exit_price - entry) * qty, 2) if long_pullback else round((entry - exit_price) * qty, 2)
                             break
 
                     all_signals.append({
@@ -205,7 +230,7 @@ def scan_full_day_market():
     return pd.DataFrame(all_signals)
 
 # -----------------------------------------------------------------------------
-# DISPLAY DASHBOARD
+# REAL-TIME RENDER (Auto-Refresh Every 10 Seconds)
 # -----------------------------------------------------------------------------
 @st.fragment(run_every=10)
 def render_dashboard():
@@ -214,9 +239,9 @@ def render_dashboard():
     current_time = now_ist.strftime("%H:%M:%S")
 
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING LIVE MARKET" if market_active else "🔴 MARKET CLOSED (ALL POSITIONS SQUARED OFF)"
+    status_text = "🟢 SCANNING REAL LIVE MARKET" if market_active else "🔴 MARKET CLOSED (REAL-TIME POSITIONS FIXED)"
 
-    df_signals = scan_full_day_market()
+    df_signals = fetch_live_signals()
 
     if not df_signals.empty:
         total_trades = len(df_signals)
@@ -224,7 +249,6 @@ def render_dashboard():
         targets_hit = len(df_signals[df_signals["Status"] == "TARGET 🟢"])
         sl_hit = len(df_signals[df_signals["Status"] == "SL HIT 🔴"])
         
-        # Auto Sq Off Data Filter
         df_sq_off = df_signals[df_signals["Status"] == "AUTO SQ OFF ⚪"]
         auto_sq_off_count = len(df_sq_off)
         auto_sq_off_pnl = round(df_sq_off["P&L (₹)"].sum(), 2) if not df_sq_off.empty else 0.0
@@ -244,7 +268,7 @@ def render_dashboard():
 
     st.markdown(f"""
         <div class="status-card">
-            <b>Status:</b> {status_text} | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
+            <b>Status:</b> {status_text} | <b>Date:</b> {current_date} | <b>Time (IST):</b> {current_time}
         </div>
     """, unsafe_allow_html=True)
 
@@ -256,7 +280,7 @@ def render_dashboard():
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Today's Trades Log (09:15 AM - 03:20 PM)")
+    st.markdown("### 📋 Live Intraday Trade Terminal")
 
     if not df_signals.empty:
         st.dataframe(
@@ -277,6 +301,6 @@ def render_dashboard():
             use_container_width=True,
         )
     else:
-        st.info("Aaj koi valid setup nahi bana hai.")
+        st.info("Market open hone par live signals scan ho kar auto-appear honge.")
 
 render_dashboard()
