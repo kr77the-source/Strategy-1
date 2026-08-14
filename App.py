@@ -13,29 +13,28 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# CUSTOM CSS: REMOVE GAPS & REDUCE FONT SIZES
+# CUSTOM CSS: CLEAN TOP PADDING & REMOVE OVERLAP
 # -----------------------------------------------------------------------------
 st.markdown("""
     <style>
-    /* Top & Side Gap Reduction */
+    /* Top Gap Fixed to Avoid Overlap with Header Icons */
     .block-container {
-        padding-top: 1rem !important;
+        padding-top: 3.5rem !important;
         padding-bottom: 0rem !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
     
-    /* Remove Header Empty Space */
+    /* Transparent Header */
     header[data-testid="stHeader"] {
         background: transparent;
-        height: 1.5rem;
     }
     
     /* Compact Headings */
     h3 {
         font-size: 1.1rem !important;
-        margin-top: -0.5rem !important;
-        margin-bottom: 0.4rem !important;
+        margin-top: 0rem !important;
+        margin-bottom: 0.5rem !important;
         padding: 0px !important;
     }
     
