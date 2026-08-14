@@ -16,30 +16,63 @@ st.set_page_config(
 # Auto refresh every 10 seconds
 st_autorefresh(interval=10000, key="datarefresh")
 
+# -----------------------------------------------------------------------------
+# CUSTOM CSS: REMOVE GAPS & REDUCE FONT SIZES
+# -----------------------------------------------------------------------------
 st.markdown("""
     <style>
+    /* Top & Side Gap Reduction */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    
+    /* Remove Header Empty Space */
+    header[data-testid="stHeader"] {
+        background: transparent;
+        height: 1.5rem;
+    }
+    
+    /* Compact Headings */
+    h3 {
+        font-size: 1.1rem !important;
+        margin-top: -0.5rem !important;
+        margin-bottom: 0.4rem !important;
+        padding: 0px !important;
+    }
+    
+    /* Compact Card Styling */
     .status-card {
         background-color: #1e2530;
         border: 1px solid #2e3846;
-        border-radius: 8px;
-        padding: 12px 16px;
+        border-radius: 6px;
+        padding: 6px 10px;
         color: #ffffff;
-        font-size: 15px;
-        margin-bottom: 10px;
+        font-size: 12px;
+        margin-bottom: 5px;
     }
+    
     .pnl-card {
         background-color: #1e2530;
         border: 1px solid #2e3846;
-        border-radius: 8px;
-        padding: 12px 16px;
+        border-radius: 6px;
+        padding: 6px 10px;
         color: #ffffff;
-        font-size: 15px;
-        margin-bottom: 20px;
+        font-size: 12px;
+        margin-bottom: 8px;
+    }
+    
+    /* Reduce Horizontal Rule Gap */
+    hr {
+        margin-top: 0.3rem !important;
+        margin-bottom: 0.3rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 20 EMA + VWAP Pullback Auto-Scanning & Performance Dashboard")
+st.markdown("### 🎯 20 EMA + VWAP Pullback Dashboard")
 
 now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
 current_date = now_ist.strftime("%Y-%m-%d")
@@ -234,19 +267,19 @@ pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
 # Top Engine Status Header
 st.markdown(f"""
     <div class="status-card">
-        <b>Live Engine Status:</b> 🟢 20 EMA + VWAP SCANNING LIVE | <b>Date:</b> {current_date} | <b>Last Updated (IST):</b> {current_time}
+        <b>Status:</b> 🟢 SCANNING | <b>Date:</b> {current_date} | <b>Time:</b> {current_time}
     </div>
 """, unsafe_allow_html=True)
 
 # Performance P&L Summary Card
 st.markdown(f"""
     <div class="pnl-card">
-        📊 <b>Total Capital:</b> ₹50,000 | <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>Overall P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+        📊 <b>Cap:</b> ₹50k | <b>Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
     </div>
 """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.markdown("### 📋 Trades Log & Real-Time Performance Dashboard")
+st.markdown("### 📋 Trades Log")
 
 if not df_signals.empty:
     st.dataframe(
@@ -267,4 +300,4 @@ if not df_signals.empty:
         use_container_width=True,
     )
 else:
-    st.info("20 EMA + VWAP Pullback setup ke hisab se abhi tak koi valid trade nahi mila hai.")
+    st.info("Abhi tak koi valid trade setup nahi mila hai.")
