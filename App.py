@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🎯 20 EMA + VWAP Dashboard (3:20 PM Auto Square-Off)")
+st.markdown("### 🎯 20 EMA + VWAP Dashboard (Auto Sq-Off P&L)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST & CONFIG
@@ -90,7 +90,7 @@ def calculate_vwap(df):
     return (tp * v).cumsum() / v.cumsum()
 
 # -----------------------------------------------------------------------------
-# FULL DAY SCANNER WITH AUTO SQUARE-OFF AT 3:20 PM
+# FULL DAY SCANNER WITH AUTO SQ-OFF PROFIT/LOSS TRACKER
 # -----------------------------------------------------------------------------
 def scan_full_day_market():
     all_signals = []
@@ -114,11 +114,10 @@ def scan_full_day_market():
             timestamps = df.index
             cmp_price = round(float(closes[-1]), 2)
 
-            # Subah 09:15 ki candles ke baad scanning start
             for i in range(20, len(df)):
                 candle_time_str = timestamps[i].strftime("%H:%M")
                 
-                # 3:20 PM ke baad koi NAYI trade trigger nahi hogi
+                # 3:20 PM ke baad naye signal trigger nahi honge
                 if candle_time_str >= "15:20":
                     break
 
@@ -139,7 +138,6 @@ def scan_full_day_market():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    # Target (+42 pts), SL (-14 pts)
                     if long_pullback:
                         sl = round(entry - 14.0, 2)
                         target = round(entry + 42.0, 2)
@@ -150,11 +148,11 @@ def scan_full_day_market():
                     status = "LIVE 🟡"
                     pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
 
-                    # Signal ke baad wali candles par checking (Exit Logic)
+                    # Exit checking loop
                     for j in range(i + 1, len(df)):
                         check_time_str = timestamps[j].strftime("%H:%M")
 
-                        # 1. Target Hit Check
+                        # 1. Target Hit
                         if long_pullback and highs[j] >= target:
                             status = "TARGET 🟢"
                             pnl = round(42.0 * qty, 2)
@@ -164,7 +162,7 @@ def scan_full_day_market():
                             pnl = round(42.0 * qty, 2)
                             break
 
-                        # 2. SL Hit Check
+                        # 2. SL Hit
                         if long_pullback and lows[j] <= sl:
                             status = "SL HIT 🔴"
                             pnl = round(-14.0 * qty, 2)
@@ -174,11 +172,16 @@ def scan_full_day_market():
                             pnl = round(-14.0 * qty, 2)
                             break
 
-                        # 3. 3:20 PM Auto Square-Off Check
+                        # 3. 3:20 PM Auto Square-Off (Exit Price Calculation)
                         if check_time_str >= "15:20":
                             status = "AUTO SQ OFF ⚪"
-                            exit_p = round(float(closes[j]), 2)
-                            pnl = round((exit_p - entry) * qty, 2) if long_pullback else round((entry - exit_p) * qty, 2)
+                            exit_price = round(float(closes[j]), 2)
+                            
+                            # Exact Sq-Off PnL
+                            if long_pullback:
+                                pnl = round((exit_price - entry) * qty, 2)
+                            else:
+                                pnl = round((entry - exit_price) * qty, 2)
                             break
 
                     all_signals.append({
@@ -194,7 +197,6 @@ def scan_full_day_market():
                         "P&L (₹)": pnl
                     })
 
-                    # Unique signal per stock
                     break
 
         except Exception:
@@ -212,7 +214,7 @@ def render_dashboard():
     current_time = now_ist.strftime("%H:%M:%S")
 
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING LIVE MARKET" if market_active else "🔴 MARKET CLOSED (AUTO SQ OFF DONE)"
+    status_text = "🟢 SCANNING LIVE MARKET" if market_active else "🔴 MARKET CLOSED (ALL POSITIONS SQUARED OFF)"
 
     df_signals = scan_full_day_market()
 
@@ -221,17 +223,24 @@ def render_dashboard():
         live_trades = len(df_signals[df_signals["Status"] == "LIVE 🟡"])
         targets_hit = len(df_signals[df_signals["Status"] == "TARGET 🟢"])
         sl_hit = len(df_signals[df_signals["Status"] == "SL HIT 🔴"])
-        auto_sq_off = len(df_signals[df_signals["Status"] == "AUTO SQ OFF ⚪"])
+        
+        # Auto Sq Off Data Filter
+        df_sq_off = df_signals[df_signals["Status"] == "AUTO SQ OFF ⚪"]
+        auto_sq_off_count = len(df_sq_off)
+        auto_sq_off_pnl = round(df_sq_off["P&L (₹)"].sum(), 2) if not df_sq_off.empty else 0.0
+
         overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
     else:
         total_trades = 0
         live_trades = 0
         targets_hit = 0
         sl_hit = 0
-        auto_sq_off = 0
+        auto_sq_off_count = 0
+        auto_sq_off_pnl = 0.0
         overall_pnl = 0.0
 
     pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
+    sq_off_pnl_color = "#4CAF50" if auto_sq_off_pnl >= 0 else "#FF5252"
 
     st.markdown(f"""
         <div class="status-card">
@@ -241,7 +250,8 @@ def render_dashboard():
 
     st.markdown(f"""
         <div class="pnl-card">
-            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades Today:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} | <b>SQ-OFF (3:20):</b> {auto_sq_off} | <b>P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} <br>
+            ⚪ <b>Auto Sq-Off Trades (3:20 PM):</b> {auto_sq_off_count} | <b>Sq-Off P&L:</b> <span style="color:{sq_off_pnl_color}; font-weight:bold;">₹{auto_sq_off_pnl}</span> | <b>Net Total P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
         </div>
     """, unsafe_allow_html=True)
 
