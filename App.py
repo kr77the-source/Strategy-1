@@ -11,9 +11,6 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Intraday Scanner (% based SL/Target)", layout="wide")
 
-# NOTE: no raw emoji characters used anywhere below — CSS badges instead.
-# This avoids the mojibake / garbled-text issue some deployments show with
-# multi-byte unicode (emoji, rupee symbol) inside f-strings.
 st.markdown("""
     <style>
     .block-container {
@@ -55,9 +52,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### LIVE INTRADAY DASHBOARD (% based SL / Target)")
-
-RUPEE = "&#8377;"  # HTML entity, safe across all encodings
+RUPEE = "&#8377;"
 
 # -----------------------------------------------------------------------------
 # WATCHLIST
@@ -78,11 +73,7 @@ UNDER_300_WATCHLIST = [
 ]
 
 # -----------------------------------------------------------------------------
-# PERSISTENT STORAGE (CSV) — survives app restarts/sleep, unlike session_state
-# NOTE: on Streamlit Community Cloud the disk resets on a fresh redeploy.
-# For guaranteed permanent history across redeploys, replace this with a
-# Google Sheet or a hosted DB (Supabase/Postgres). For day-to-day persistence
-# while the app stays deployed, this CSV approach works.
+# PERSISTENT STORAGE (CSV)
 # -----------------------------------------------------------------------------
 HISTORY_FILE = "trade_history.csv"
 HISTORY_COLUMNS = [
@@ -129,9 +120,6 @@ with st.sidebar:
 
 CAPITAL_PER_STOCK = TOTAL_CAPITAL / MAX_ACTIVE_TRADES
 
-# -----------------------------------------------------------------------------
-# SESSION STATE
-# -----------------------------------------------------------------------------
 if "trade_log" not in st.session_state:
     st.session_state.trade_log = {}
 if "processed_keys" not in st.session_state:
@@ -171,7 +159,6 @@ def fetch_all_data():
         )
     except Exception:
         return {}
-
     result = {}
     for symbol in UNDER_300_WATCHLIST:
         try:
@@ -213,7 +200,6 @@ def scan_and_update():
             ema20, vwap = df["EMA20"].values, df["VWAP"].values
             timestamps = df.index
 
-            # Update LIVE trades
             for key, trade in list(st.session_state.trade_log.items()):
                 if trade["SymbolRaw"] != symbol or trade["Status"] != "LIVE":
                     continue
@@ -261,7 +247,6 @@ def scan_and_update():
                 else:
                     trade["Tax"], trade["Net P&L"] = None, None
 
-            # Detect NEW signals
             for i in range(20, len(df)):
                 t_str = timestamps[i].strftime("%H:%M")
                 if t_str >= "15:15":
@@ -360,17 +345,10 @@ def render_dashboard():
             label, cls = STATUS_BADGE[t["Status"]]
             type_cls = "badge-buy" if t["TypeLabel"] == "BUY" else "badge-sell"
             rows.append({
-                "Time": t["Time"],
-                "Symbol": t["Symbol"],
-                "Type": badge(t["TypeLabel"], type_cls),
-                "Qty": t["Qty"],
-                "Entry": t["Entry"],
-                "SL": t["SL"],
-                "Target": t["Target"],
-                "CMP/Exit": t["CMP/Exit"],
-                "Status": badge(label, cls),
-                "Gross P&L": t["Gross P&L"],
-                "Net P&L": t["Net P&L"] if t["Net P&L"] is not None else "-",
+                "Time": t["Time"], "Symbol": t["Symbol"], "Type": badge(t["TypeLabel"], type_cls),
+                "Qty": t["Qty"], "Entry": t["Entry"], "SL": t["SL"], "Target": t["Target"],
+                "CMP/Exit": t["CMP/Exit"], "Status": badge(label, cls),
+                "Gross P&L": t["Gross P&L"], "Net P&L": t["Net P&L"] if t["Net P&L"] is not None else "-",
             })
         display_df = pd.DataFrame(rows)
         st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
@@ -380,14 +358,180 @@ def render_dashboard():
     with st.expander("Full saved trade history (all days)"):
         if not history_df.empty:
             st.dataframe(history_df.iloc[::-1], use_container_width=True)
-            st.download_button(
-                "Download full history CSV",
-                data=history_df.to_csv(index=False),
-                file_name="trade_history.csv",
-                mime="text/csv",
-            )
+            st.download_button("Download full history CSV", data=history_df.to_csv(index=False),
+                                file_name="trade_history.csv", mime="text/csv")
         else:
             st.caption("Abhi koi closed trade save nahi hui hai.")
 
 
-render_dashboard()
+# -----------------------------------------------------------------------------
+# BACKTEST: run the SAME strategy over the last 1 month of 5-min candles.
+# VWAP resets every day (grouped by date), same signal + SL/target logic as live.
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_backtest(sl_pct, target_pct, capital_per_stock, symbols):
+    try:
+        data = yf.download(
+            tickers=" ".join(symbols),
+            period="1mo", interval="5m", group_by="ticker",
+            threads=True, progress=False, auto_adjust=False,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    all_trades = []
+
+    for symbol in symbols:
+        try:
+            df = data[symbol].dropna(how="all") if len(symbols) > 1 else data
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+
+        df = df.copy()
+        df["DateOnly"] = df.index.date
+
+        for day, day_df in df.groupby("DateOnly"):
+            day_df = day_df.copy()
+            if len(day_df) < 20:
+                continue
+
+            day_df["EMA20"] = day_df["Close"].ewm(span=20, adjust=False).mean()
+            day_df["VWAP"] = calculate_vwap(day_df)  # resets naturally since it's per-day slice
+
+            closes, highs, lows = day_df["Close"].values, day_df["High"].values, day_df["Low"].values
+            ema20, vwap = day_df["EMA20"].values, day_df["VWAP"].values
+            timestamps = day_df.index
+
+            i = 20
+            while i < len(day_df):
+                t_str = timestamps[i].strftime("%H:%M")
+                if t_str >= "15:15":
+                    break
+
+                curr_close, curr_high, curr_low = closes[i], highs[i], lows[i]
+                curr_ema, curr_vwap = ema20[i], vwap[i]
+
+                bullish = curr_ema > curr_vwap
+                long_pullback = bullish and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
+                bearish = curr_ema < curr_vwap
+                short_pullback = bearish and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
+
+                if not (long_pullback or short_pullback):
+                    i += 1
+                    continue
+
+                is_long = long_pullback
+                entry = round(float(curr_close), 2)
+                qty = max(1, int(capital_per_stock / entry))
+                sl = round(entry - entry * sl_pct, 2) if is_long else round(entry + entry * sl_pct, 2)
+                target = round(entry + entry * target_pct, 2) if is_long else round(entry - entry * target_pct, 2)
+
+                status, exit_price = "SQOFF", entry
+                exit_j = len(day_df) - 1
+
+                for j in range(i + 1, len(day_df)):
+                    tj_str = timestamps[j].strftime("%H:%M")
+                    hit_target = (is_long and highs[j] >= target) or (not is_long and lows[j] <= target)
+                    hit_sl = (is_long and lows[j] <= sl) or (not is_long and highs[j] >= sl)
+
+                    if hit_target:
+                        status, exit_price, exit_j = "TARGET", target, j
+                        break
+                    if hit_sl:
+                        status, exit_price, exit_j = "SL", sl, j
+                        break
+                    if tj_str >= "15:20":
+                        status, exit_price, exit_j = "SQOFF", round(float(closes[j]), 2), j
+                        break
+                else:
+                    exit_price, exit_j = round(float(closes[-1]), 2), len(day_df) - 1
+
+                gross = round((exit_price - entry) * qty, 2) if is_long else round((entry - exit_price) * qty, 2)
+                charges = estimate_charges(entry, exit_price, qty)
+                net = round(gross - charges, 2)
+
+                all_trades.append({
+                    "Date": str(day), "Time": t_str, "Symbol": symbol.replace(".NS", ""),
+                    "Type": "BUY" if is_long else "SELL", "Qty": qty, "Entry": entry,
+                    "SL": sl, "Target": target, "Exit": exit_price, "Status": status,
+                    "GrossPnL": gross, "Charges": charges, "NetPnL": net,
+                })
+
+                i = exit_j + 1  # move past this trade before scanning for the next one
+
+    return pd.DataFrame(all_trades)
+
+
+def render_backtest_tab():
+    st.markdown("### 1-Month Backtest (same strategy, historical 5-min candles)")
+    st.caption(
+        "Yahoo Finance sirf pichhle ~60 din ka 5-min data deta hai, isliye ye backtest "
+        "waqai available data ke hisab se hoga (approx last 1 month). VWAP har din reset hota hai."
+    )
+
+    if st.button("Run 1-Month Backtest"):
+        with st.spinner("Backtest chal raha hai, thoda time lagega (50 stocks x ~20 din)..."):
+            bt_df = run_backtest(SL_PCT, TARGET_PCT, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST)
+        st.session_state.backtest_result = bt_df
+
+    bt_df = st.session_state.get("backtest_result")
+
+    if bt_df is None:
+        st.info("Button dabao backtest chalane ke liye.")
+        return
+
+    if bt_df.empty:
+        st.warning("Koi trade nahi mila is period me in settings ke saath.")
+        return
+
+    total_trades = len(bt_df)
+    targets = len(bt_df[bt_df["Status"] == "TARGET"])
+    sl_hits = len(bt_df[bt_df["Status"] == "SL"])
+    sqoff = len(bt_df[bt_df["Status"] == "SQOFF"])
+    win_rate = round((targets / total_trades) * 100, 1) if total_trades else 0.0
+    total_gross = round(bt_df["GrossPnL"].sum(), 2)
+    total_charges = round(bt_df["Charges"].sum(), 2)
+    total_net = round(bt_df["NetPnL"].sum(), 2)
+    avg_net_per_trade = round(total_net / total_trades, 2) if total_trades else 0.0
+
+    net_color = "#4CAF50" if total_net >= 0 else "#FF5252"
+
+    st.markdown(f"""
+        <div class="pnl-card">
+            <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets} ({win_rate}%) |
+            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff}<br><br>
+            <b>Gross P&L:</b> {RUPEE}{total_gross} |
+            <b>Total Charges:</b> {RUPEE}{total_charges} |
+            <b>Net P&L:</b> <span style="color:{net_color}; font-weight:bold;">{RUPEE}{total_net}</span><br>
+            <b>Avg Net P&L / trade:</b> {RUPEE}{avg_net_per_trade}
+        </div>
+    """, unsafe_allow_html=True)
+
+    daily = bt_df.groupby("Date")["NetPnL"].sum().reset_index()
+    daily["CumulativeNetPnL"] = daily["NetPnL"].cumsum()
+
+    st.markdown("#### Day-wise P&L")
+    st.dataframe(daily, use_container_width=True)
+
+    st.markdown("#### Equity Curve (cumulative Net P&L)")
+    st.line_chart(daily.set_index("Date")["CumulativeNetPnL"])
+
+    with st.expander("All backtest trades"):
+        st.dataframe(bt_df.iloc[::-1], use_container_width=True)
+        st.download_button("Download backtest CSV", data=bt_df.to_csv(index=False),
+                            file_name="backtest_1month.csv", mime="text/csv")
+
+
+# -----------------------------------------------------------------------------
+# MAIN LAYOUT: two tabs
+# -----------------------------------------------------------------------------
+st.markdown("### INTRADAY SCANNER (% based SL / Target)")
+tab_live, tab_backtest = st.tabs(["Live Dashboard", "1-Month Backtest"])
+
+with tab_live:
+    render_dashboard()
+
+with tab_backtest:
+    render_backtest_tab()
