@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Intraday Scanner (Rectified Low-Move Stocks)", layout="wide"
+    page_title="Intraday Scanner (14 SL / 60 Target)", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (Low Move = ATR Based | High Move = 14 SL / 30 Tgt)")
+st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (All Stocks: 14 Pts SL | 60 Pts Target)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
@@ -103,20 +103,6 @@ def calculate_vwap(df):
     tp = (df['High'] + df['Low'] + df['Close']) / 3
     return (tp * v).cumsum() / v.cumsum()
 
-def calculate_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-def calculate_daily_atr(df):
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.mean()
-
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
@@ -132,7 +118,7 @@ def estimate_charges(entry_price, exit_price, qty):
     return round(total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 # -----------------------------------------------------------------------------
-# REAL-TIME LIVE SCANNER LOGIC
+# REAL-TIME LIVE SCANNER LOGIC (STRICT 14 PTS SL / 60 PTS TARGET FOR ALL)
 # -----------------------------------------------------------------------------
 def fetch_live_signals():
     all_signals = []
@@ -147,16 +133,12 @@ def fetch_live_signals():
 
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['VWAP'] = calculate_vwap(df)
-            df['ATR'] = calculate_atr(df, period=14)
-            
-            daily_atr = calculate_daily_atr(df)
 
             closes = df["Close"].values
             highs = df["High"].values
             lows = df["Low"].values
             ema20 = df["EMA20"].values
             vwap = df["VWAP"].values
-            atrs = df["ATR"].values
             timestamps = df.index
             
             cmp_price = round(float(closes[-1]), 2)
@@ -172,10 +154,6 @@ def fetch_live_signals():
                 curr_low = lows[i]
                 curr_ema = ema20[i]
                 curr_vwap = vwap[i]
-                curr_atr = atrs[i]
-
-                if np.isnan(curr_atr) or curr_atr == 0:
-                    curr_atr = curr_close * 0.005
 
                 bullish_trend = curr_ema > curr_vwap
                 long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -188,19 +166,9 @@ def fetch_live_signals():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    # LOW MOVE VS HIGH MOVE RECTIFICATION LOGIC
-                    is_low_move = (daily_atr < 30.0) or (entry < 150.0)
-
-                    if is_low_move:
-                        # ATR Based SL and Target for Low-Move Stocks
-                        sl_dist = round(float(curr_atr + (entry * 0.0025)), 2)
-                        target_dist = round(float(sl_dist * 1.20), 2)
-                        mode_text = "ATR Dynamic"
-                    else:
-                        # Fixed 14 SL / 30 Target for High-Move Stocks
-                        sl_dist = 14.0
-                        target_dist = 30.0
-                        mode_text = "Fixed 14/30"
+                    # STRICT 14 POINTS SL AND 60 POINTS TARGET FOR ALL STOCKS
+                    sl_dist = 14.0
+                    target_dist = 60.0
 
                     if long_pullback:
                         sl = round(entry - sl_dist, 2)
@@ -253,9 +221,8 @@ def fetch_live_signals():
                         "Type": trade_type,
                         "Qty": qty,
                         "Entry": entry,
-                        "SL Price": sl,
-                        "Target Price": target,
-                        "Mode": mode_text,
+                        "SL (14 Pts)": sl,
+                        "Target (60 Pts)": target,
                         "CMP/Exit": exit_price,
                         "Status": status,
                         "Gross P&L (₹)": gross_pnl,
@@ -321,7 +288,7 @@ def render_dashboard():
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Live Intraday Trade Terminal")
+    st.markdown("### 📋 Live Intraday Trade Terminal (Strict 14 SL / 60 Target)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -332,9 +299,8 @@ def render_dashboard():
                     "Type",
                     "Qty",
                     "Entry",
-                    "SL Price",
-                    "Target Price",
-                    "Mode",
+                    "SL (14 Pts)",
+                    "Target (60 Pts)",
                     "CMP/Exit",
                     "Status",
                     "Gross P&L (₹)",
