@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Intraday Scanner (% based SL/Target)", layout="wide")
+st.set_page_config(page_title="Intraday Scanner (14 SL / 30 Target)", layout="wide")
 
 st.markdown("""
     <style>
@@ -98,15 +98,15 @@ def append_history(row: dict):
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR SETTINGS
+# SIDEBAR SETTINGS — SL/Target back to fixed POINTS (14 / 30), adjustable
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
     TOTAL_CAPITAL = st.number_input("Total Capital (Rs)", value=50000, step=5000)
     MAX_ACTIVE_TRADES = st.number_input("Max Active Trades", value=4, min_value=1, max_value=10)
-    SL_PCT = st.number_input("Stop Loss (%)", value=0.6, step=0.1, format="%.2f") / 100
-    TARGET_PCT = st.number_input("Target (%)", value=1.1, step=0.1, format="%.2f") / 100
-    st.caption(f"Risk:Reward approx 1 : {round(TARGET_PCT/SL_PCT, 2)}")
+    SL_POINTS = st.number_input("Stop Loss (points)", value=14.0, step=1.0)
+    TARGET_POINTS = st.number_input("Target (points)", value=30.0, step=1.0)
+    st.caption(f"Risk:Reward = 1 : {round(TARGET_POINTS/SL_POINTS, 2)}")
 
     if st.button("Reset TODAY's live signals (keeps history file)"):
         st.session_state.trade_log = {}
@@ -136,17 +136,24 @@ def calculate_vwap(df):
     return (tp * v).cumsum() / np.maximum(v.cumsum(), 1)
 
 
+# -----------------------------------------------------------------------------
+# INTRADAY EQUITY CHARGES (all-in: brokerage + STT + exchange + GST + stamp + SEBI)
+# STT applies only on the SELL leg for intraday equity (0.025%).
+# SEBI turnover fee corrected: Rs 10 per crore of turnover = 0.0001% (was 10x too low before).
+# -----------------------------------------------------------------------------
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
     total_turnover = buy_turnover + sell_turnover
-    total_brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
-    stt = sell_turnover * 0.00025
-    exchange_charges = total_turnover * 0.0000297
-    gst = (total_brokerage + exchange_charges) * 0.18
-    stamp_duty = buy_turnover * 0.00003
-    sebi_charges = total_turnover * 0.0000001
-    return round(total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
+
+    brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
+    stt = sell_turnover * 0.00025                      # 0.025% intraday, sell side only
+    exchange_charges = total_turnover * 0.0000297       # NSE transaction charges
+    gst = (brokerage + exchange_charges) * 0.18         # 18% GST on brokerage + exchange charges
+    stamp_duty = buy_turnover * 0.00003                 # 0.003% intraday, buy side only
+    sebi_charges = total_turnover * 0.000001            # Rs 10 / crore = 0.0001% (FIXED)
+
+    return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -273,8 +280,8 @@ def scan_and_update():
                 is_long = long_pullback
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(CAPITAL_PER_STOCK / entry))
-                sl = round(entry - entry * SL_PCT, 2) if is_long else round(entry + entry * SL_PCT, 2)
-                target = round(entry + entry * TARGET_PCT, 2) if is_long else round(entry - entry * TARGET_PCT, 2)
+                sl = round(entry - SL_POINTS, 2) if is_long else round(entry + SL_POINTS, 2)
+                target = round(entry + TARGET_POINTS, 2) if is_long else round(entry - TARGET_POINTS, 2)
 
                 st.session_state.trade_log[candle_key] = {
                     "SymbolRaw": symbol, "EntryIdx": i, "IsLong": is_long,
@@ -365,15 +372,15 @@ def render_dashboard():
 
 
 # -----------------------------------------------------------------------------
-# BACKTEST: run the SAME strategy over the last 1 month of 5-min candles.
-# VWAP resets every day (grouped by date), same signal + SL/target logic as live.
+# BACKTEST: last 60 days (yfinance max for 5-min candles), same fixed-point
+# SL/Target logic as live. VWAP resets every day.
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_backtest(sl_pct, target_pct, capital_per_stock, symbols):
+def run_backtest(sl_points, target_points, capital_per_stock, symbols):
     try:
         data = yf.download(
             tickers=" ".join(symbols),
-            period="1mo", interval="5m", group_by="ticker",
+            period="60d", interval="5m", group_by="ticker",
             threads=True, progress=False, auto_adjust=False,
         )
     except Exception:
@@ -398,7 +405,7 @@ def run_backtest(sl_pct, target_pct, capital_per_stock, symbols):
                 continue
 
             day_df["EMA20"] = day_df["Close"].ewm(span=20, adjust=False).mean()
-            day_df["VWAP"] = calculate_vwap(day_df)  # resets naturally since it's per-day slice
+            day_df["VWAP"] = calculate_vwap(day_df)
 
             closes, highs, lows = day_df["Close"].values, day_df["High"].values, day_df["Low"].values
             ema20, vwap = day_df["EMA20"].values, day_df["VWAP"].values
@@ -425,8 +432,8 @@ def run_backtest(sl_pct, target_pct, capital_per_stock, symbols):
                 is_long = long_pullback
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(capital_per_stock / entry))
-                sl = round(entry - entry * sl_pct, 2) if is_long else round(entry + entry * sl_pct, 2)
-                target = round(entry + entry * target_pct, 2) if is_long else round(entry - entry * target_pct, 2)
+                sl = round(entry - sl_points, 2) if is_long else round(entry + sl_points, 2)
+                target = round(entry + target_points, 2) if is_long else round(entry - target_points, 2)
 
                 status, exit_price = "SQOFF", entry
                 exit_j = len(day_df) - 1
@@ -459,21 +466,22 @@ def run_backtest(sl_pct, target_pct, capital_per_stock, symbols):
                     "GrossPnL": gross, "Charges": charges, "NetPnL": net,
                 })
 
-                i = exit_j + 1  # move past this trade before scanning for the next one
+                i = exit_j + 1
 
     return pd.DataFrame(all_trades)
 
 
 def render_backtest_tab():
-    st.markdown("### 1-Month Backtest (same strategy, historical 5-min candles)")
+    st.markdown("### Backtest (last 60 days — max 5-min history yfinance allows)")
     st.caption(
-        "Yahoo Finance sirf pichhle ~60 din ka 5-min data deta hai, isliye ye backtest "
-        "waqai available data ke hisab se hoga (approx last 1 month). VWAP har din reset hota hai."
+        "Yahoo Finance sirf pichhle ~60 din ka 5-min data deta hai — 6 mahine ka poora "
+        "5-min data koi free source nahi deta, isliye ye sabse accurate available option hai. "
+        "VWAP har din reset hota hai, aur SL/Target ab fixed POINTS (sidebar se set) pe based hain."
     )
 
-    if st.button("Run 1-Month Backtest"):
-        with st.spinner("Backtest chal raha hai, thoda time lagega (50 stocks x ~20 din)..."):
-            bt_df = run_backtest(SL_PCT, TARGET_PCT, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST)
+    if st.button("Run Backtest"):
+        with st.spinner("Backtest chal raha hai, thoda time lagega..."):
+            bt_df = run_backtest(SL_POINTS, TARGET_POINTS, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST)
         st.session_state.backtest_result = bt_df
 
     bt_df = st.session_state.get("backtest_result")
@@ -521,14 +529,14 @@ def render_backtest_tab():
     with st.expander("All backtest trades"):
         st.dataframe(bt_df.iloc[::-1], use_container_width=True)
         st.download_button("Download backtest CSV", data=bt_df.to_csv(index=False),
-                            file_name="backtest_1month.csv", mime="text/csv")
+                            file_name="backtest_60days.csv", mime="text/csv")
 
 
 # -----------------------------------------------------------------------------
-# MAIN LAYOUT: two tabs
+# MAIN LAYOUT
 # -----------------------------------------------------------------------------
-st.markdown("### INTRADAY SCANNER (% based SL / Target)")
-tab_live, tab_backtest = st.tabs(["Live Dashboard", "1-Month Backtest"])
+st.markdown("### INTRADAY SCANNER (14 SL / 30 Target)")
+tab_live, tab_backtest = st.tabs(["Live Dashboard", "Backtest"])
 
 with tab_live:
     render_dashboard()
