@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Intraday Scanner (14 SL / 60 Target)", layout="wide"
+    page_title="Intraday Scanner (14 SL / 25 Target)", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (All Stocks: 14 Pts SL | 60 Pts Target)")
+st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (All Stocks: 14 Pts SL | 25 Pts Target)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
@@ -118,7 +118,7 @@ def estimate_charges(entry_price, exit_price, qty):
     return round(total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 # -----------------------------------------------------------------------------
-# REAL-TIME LIVE SCANNER LOGIC (STRICT 14 PTS SL / 60 PTS TARGET FOR ALL)
+# REAL-TIME LIVE SCANNER LOGIC (STRICT 14 PTS SL / 25 PTS TARGET FOR ALL)
 # -----------------------------------------------------------------------------
 def fetch_live_signals():
     all_signals = []
@@ -166,9 +166,9 @@ def fetch_live_signals():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    # STRICT 14 POINTS SL AND 60 POINTS TARGET FOR ALL STOCKS
+                    # STRICT 14 POINTS SL AND 25 POINTS TARGET FOR ALL STOCKS
                     sl_dist = 14.0
-                    target_dist = 60.0
+                    target_dist = 25.0
 
                     if long_pullback:
                         sl = round(entry - sl_dist, 2)
@@ -222,7 +222,7 @@ def fetch_live_signals():
                         "Qty": qty,
                         "Entry": entry,
                         "SL (14 Pts)": sl,
-                        "Target (60 Pts)": target,
+                        "Target (25 Pts)": target,
                         "CMP/Exit": exit_price,
                         "Status": status,
                         "Gross P&L (₹)": gross_pnl,
@@ -288,7 +288,7 @@ def render_dashboard():
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Live Intraday Trade Terminal (Strict 14 SL / 60 Target)")
+    st.markdown("### 📋 Live Intraday Trade Terminal (Strict 14 SL / 25 Target)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -300,7 +300,7 @@ def render_dashboard():
                     "Qty",
                     "Entry",
                     "SL (14 Pts)",
-                    "Target (60 Pts)",
+                    "Target (25 Pts)",
                     "CMP/Exit",
                     "Status",
                     "Gross P&L (₹)",
