@@ -9,12 +9,9 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Intraday Scanner (14 SL / 25 Target)", layout="wide"
+    page_title="Intraday Scanner (% based SL/Target)", layout="wide"
 )
 
-# -----------------------------------------------------------------------------
-# CUSTOM CSS
-# -----------------------------------------------------------------------------
 st.markdown("""
     <style>
     .block-container {
@@ -23,16 +20,14 @@ st.markdown("""
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
-    header[data-testid="stHeader"] {
-        background: transparent;
-    }
+    header[data-testid="stHeader"] { background: transparent; }
     h3 {
         font-size: 1.1rem !important;
         margin-top: 0rem !important;
         margin-bottom: 0.5rem !important;
         padding: 0px !important;
     }
-    .status-card {
+    .status-card, .pnl-card {
         background-color: #1e2530;
         border: 1px solid #2e3846;
         border-radius: 6px;
@@ -41,276 +36,294 @@ st.markdown("""
         font-size: 12px;
         margin-bottom: 5px;
     }
-    .pnl-card {
-        background-color: #1e2530;
-        border: 1px solid #2e3846;
-        border-radius: 6px;
-        padding: 6px 10px;
-        color: #ffffff;
-        font-size: 12px;
-        margin-bottom: 8px;
-    }
-    hr {
-        margin-top: 0.3rem !important;
-        margin-bottom: 0.3rem !important;
-    }
+    hr { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (All Stocks: 14 Pts SL | 25 Pts Target)")
+st.markdown("### ðŸ”´ LIVE INTRADAY DASHBOARD (% based SL / Target)")
 
 # -----------------------------------------------------------------------------
-# WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
+# WATCHLIST
 # -----------------------------------------------------------------------------
 UNDER_300_WATCHLIST = [
-    # Banking & Financials
     "PNB.NS", "BANKBARODA.NS", "CANBK.NS", "UNIONBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANDHANBNK.NS",
-    # Power & Energy
     "POWERGRID.NS", "NHPC.NS", "SJVN.NS", "NLCINDIA.NS", "CESC.NS",
-    # Oil & Gas
     "ONGC.NS", "IOC.NS", "GAIL.NS", "PETRONET.NS", "OIL.NS",
-    # Metals & Mining
     "TATASTEEL.NS", "SAIL.NS", "NMDC.NS", "VEDL.NS", "NATIONALUM.NS",
-    # Railway & Infra
     "RVNL.NS", "IRFC.NS", "IRCON.NS", "NBCC.NS", "HUDCO.NS",
-    # Auto Ancillary
-    "MOTHERSON.NS", "CASTROLIND.NS", "EXIDEIND.NS", "ARE&M.NS",
-    # IT & Telecom
+    "MOTHERSON.NS", "CASTROLIND.NS", "EXIDEIND.NS",
     "WIPRO.NS", "HFCL.NS", "FSL.NS", "ITI.NS",
-    # Pharma
-    "PIRPHARMA.NS", "BIOCON.NS", "GLENMARK.NS",
-    # Capital Goods & Defense
+    "BIOCON.NS", "GLENMARK.NS",
     "BEL.NS", "BHEL.NS",
-    # Finance & Logistics
     "MANAPPURAM.NS", "REDINGTON.NS", "IDFC.NS",
-    # Textiles & Real Estate
-    "TRIDENT.NS", "ALOKINDS.NS",
-    # Fertilizer & Chemicals
+    "TRIDENT.NS",
     "GSFC.NS", "GNFC.NS", "FACT.NS", "RCF.NS", "NFL.NS"
 ]
 
-TOTAL_CAPITAL = 50000.0
-MAX_ACTIVE_TRADES = 4
+# -----------------------------------------------------------------------------
+# SIDEBAR SETTINGS (fully adjustable â€” no more hardcoded 14/25 points)
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("âš™ï¸ Settings")
+    TOTAL_CAPITAL = st.number_input("Total Capital (â‚¹)", value=50000, step=5000)
+    MAX_ACTIVE_TRADES = st.number_input("Max Active Trades", value=4, min_value=1, max_value=10)
+    SL_PCT = st.number_input("Stop Loss (%)", value=0.6, step=0.1, format="%.2f") / 100
+    TARGET_PCT = st.number_input("Target (%)", value=1.1, step=0.1, format="%.2f") / 100
+    st.caption(f"Risk:Reward â‰ˆ 1 : {round(TARGET_PCT/SL_PCT, 2)}")
+    if st.button("ðŸ”„ Reset today's signals"):
+        st.session_state.trade_log = {}
+        st.session_state.processed_keys = set()
+
 CAPITAL_PER_STOCK = TOTAL_CAPITAL / MAX_ACTIVE_TRADES
 
-def is_market_open(now_time):
-    start_time = time(9, 15)
-    end_time = time(15, 30)
-    return start_time <= now_time.time() <= end_time
+# -----------------------------------------------------------------------------
+# SESSION STATE (persists across the 10s auto-refresh â€” this is what makes it
+# genuinely "live" instead of re-simulating the whole day every run)
+# -----------------------------------------------------------------------------
+if "trade_log" not in st.session_state:
+    st.session_state.trade_log = {}       # key -> trade dict
+if "processed_keys" not in st.session_state:
+    st.session_state.processed_keys = set()  # candle keys already checked for new signals
+
+
+def is_market_open(now_dt):
+    start_time, end_time = time(9, 15), time(15, 30)
+    return start_time <= now_dt.time() <= end_time
+
 
 def calculate_vwap(df):
-    v = df['Volume'].values
-    tp = (df['High'] + df['Low'] + df['Close']) / 3
-    return (tp * v).cumsum() / v.cumsum()
+    v = df["Volume"].values
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    return (tp * v).cumsum() / np.maximum(v.cumsum(), 1)
+
 
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
     total_turnover = buy_turnover + sell_turnover
-    
+
     total_brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
     stt = sell_turnover * 0.00025
     exchange_charges = total_turnover * 0.0000297
     gst = (total_brokerage + exchange_charges) * 0.18
     stamp_duty = buy_turnover * 0.00003
     sebi_charges = total_turnover * 0.0000001
-    
+
     return round(total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
-# -----------------------------------------------------------------------------
-# REAL-TIME LIVE SCANNER LOGIC (STRICT 14 PTS SL / 25 PTS TARGET FOR ALL)
-# -----------------------------------------------------------------------------
-def fetch_live_signals():
-    all_signals = []
 
+# -----------------------------------------------------------------------------
+# BATCH FETCH (single call for all symbols instead of 50 separate requests)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_all_data():
+    try:
+        data = yf.download(
+            tickers=" ".join(UNDER_300_WATCHLIST),
+            period="1d",
+            interval="5m",
+            group_by="ticker",
+            threads=True,
+            progress=False,
+            auto_adjust=False,
+        )
+    except Exception:
+        return {}
+
+    result = {}
     for symbol in UNDER_300_WATCHLIST:
         try:
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period="1d", interval="5m")
+            df = data[symbol].dropna(how="all") if len(UNDER_300_WATCHLIST) > 1 else data
+            if df is not None and not df.empty and len(df) >= 20:
+                result[symbol] = df
+        except Exception:
+            continue
+    return result
 
-            if df.empty or len(df) < 20:
-                continue
 
-            df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-            df['VWAP'] = calculate_vwap(df)
+def count_live_trades():
+    return sum(1 for t in st.session_state.trade_log.values() if t["Status"] == "LIVE ðŸŸ¡")
 
-            closes = df["Close"].values
-            highs = df["High"].values
-            lows = df["Low"].values
-            ema20 = df["EMA20"].values
-            vwap = df["VWAP"].values
+
+# -----------------------------------------------------------------------------
+# SIGNAL DETECTION + LIVE TRADE UPDATE
+# -----------------------------------------------------------------------------
+def scan_and_update():
+    all_data = fetch_all_data()
+
+    for symbol, df in all_data.items():
+        try:
+            df = df.copy()
+            df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+            df["VWAP"] = calculate_vwap(df)
+
+            closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
+            ema20, vwap = df["EMA20"].values, df["VWAP"].values
             timestamps = df.index
-            
-            cmp_price = round(float(closes[-1]), 2)
 
+            # --- 1. Update any already-LIVE trades for this symbol with new candles ---
+            for key, trade in list(st.session_state.trade_log.items()):
+                if trade["SymbolRaw"] != symbol or trade["Status"] != "LIVE ðŸŸ¡":
+                    continue
+
+                entry_idx = trade["EntryIdx"]
+                is_long = trade["IsLong"]
+                sl, target = trade["SL"], trade["Target"]
+
+                for j in range(entry_idx + 1, len(df)):
+                    t_str = timestamps[j].strftime("%H:%M")
+                    hit_target = (is_long and highs[j] >= target) or (not is_long and lows[j] <= target)
+                    hit_sl = (is_long and lows[j] <= sl) or (not is_long and highs[j] >= sl)
+
+                    if hit_target:
+                        trade["Status"] = "TARGET ðŸŸ¢"
+                        trade["CMP/Exit"] = target
+                        break
+                    if hit_sl:
+                        trade["Status"] = "SL HIT ðŸ”´"
+                        trade["CMP/Exit"] = sl
+                        break
+                    if t_str >= "15:20":
+                        trade["Status"] = "AUTO SQ OFF âšª"
+                        trade["CMP/Exit"] = round(float(closes[j]), 2)
+                        break
+                else:
+                    # still open, mark last close as running CMP
+                    trade["CMP/Exit"] = round(float(closes[-1]), 2)
+
+                if trade["Status"] != "LIVE ðŸŸ¡":
+                    gross = (
+                        round((trade["CMP/Exit"] - trade["Entry"]) * trade["Qty"], 2)
+                        if is_long
+                        else round((trade["Entry"] - trade["CMP/Exit"]) * trade["Qty"], 2)
+                    )
+                    est_tax = estimate_charges(trade["Entry"], trade["CMP/Exit"], trade["Qty"])
+                    trade["Gross P&L (â‚¹)"] = gross
+                    trade["Tax/Charges (â‚¹)"] = est_tax
+                    trade["Net P&L (â‚¹)"] = round(gross - est_tax, 2)
+                else:
+                    gross = (
+                        round((trade["CMP/Exit"] - trade["Entry"]) * trade["Qty"], 2)
+                        if is_long
+                        else round((trade["Entry"] - trade["CMP/Exit"]) * trade["Qty"], 2)
+                    )
+                    trade["Gross P&L (â‚¹)"] = gross
+                    trade["Tax/Charges (â‚¹)"] = "-"
+                    trade["Net P&L (â‚¹)"] = "-"
+
+            # --- 2. Look for NEW signals on candles not yet processed ---
             for i in range(20, len(df)):
-                candle_time_str = timestamps[i].strftime("%H:%M")
-                
-                if candle_time_str >= "15:15":
+                t_str = timestamps[i].strftime("%H:%M")
+                if t_str >= "15:15":
                     break
 
-                curr_close = closes[i]
-                curr_high = highs[i]
-                curr_low = lows[i]
-                curr_ema = ema20[i]
-                curr_vwap = vwap[i]
+                candle_key = f"{symbol}_{timestamps[i].isoformat()}"
+                if candle_key in st.session_state.processed_keys:
+                    continue
+                st.session_state.processed_keys.add(candle_key)
 
-                bullish_trend = curr_ema > curr_vwap
-                long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
+                curr_close, curr_high, curr_low = closes[i], highs[i], lows[i]
+                curr_ema, curr_vwap = ema20[i], vwap[i]
 
-                bearish_trend = curr_ema < curr_vwap
-                short_pullback = bearish_trend and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
+                bullish = curr_ema > curr_vwap
+                long_pullback = bullish and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
 
-                if long_pullback or short_pullback:
-                    trade_type = "BUY 🟢" if long_pullback else "SELL 🔴"
-                    entry = round(float(curr_close), 2)
-                    qty = max(1, int(CAPITAL_PER_STOCK / entry))
+                bearish = curr_ema < curr_vwap
+                short_pullback = bearish and (curr_high >= curr_ema) and (curr_close < curr_ema) and (curr_close < curr_vwap)
 
-                    # STRICT 14 POINTS SL AND 25 POINTS TARGET FOR ALL STOCKS
-                    sl_dist = 14.0
-                    target_dist = 25.0
+                if not (long_pullback or short_pullback):
+                    continue
 
-                    if long_pullback:
-                        sl = round(entry - sl_dist, 2)
-                        target = round(entry + target_dist, 2)
-                    else:
-                        sl = round(entry + sl_dist, 2)
-                        target = round(entry - target_dist, 2)
+                # enforce capital / max-active-trades cap
+                if count_live_trades() >= MAX_ACTIVE_TRADES:
+                    continue  # skip taking this trade â€” capital already deployed
 
-                    status = "LIVE 🟡"
-                    exit_price = cmp_price
-                    gross_pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
+                is_long = long_pullback
+                entry = round(float(curr_close), 2)
+                qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    for j in range(i + 1, len(df)):
-                        check_time_str = timestamps[j].strftime("%H:%M")
+                sl = round(entry - entry * SL_PCT, 2) if is_long else round(entry + entry * SL_PCT, 2)
+                target = round(entry + entry * TARGET_PCT, 2) if is_long else round(entry - entry * TARGET_PCT, 2)
 
-                        if long_pullback and highs[j] >= target:
-                            status = "TARGET 🟢"
-                            exit_price = target
-                            gross_pnl = round(target_dist * qty, 2)
-                            break
-                        elif not long_pullback and lows[j] <= target:
-                            status = "TARGET 🟢"
-                            exit_price = target
-                            gross_pnl = round(target_dist * qty, 2)
-                            break
-
-                        if long_pullback and lows[j] <= sl:
-                            status = "SL HIT 🔴"
-                            exit_price = sl
-                            gross_pnl = round(-sl_dist * qty, 2)
-                            break
-                        elif not long_pullback and highs[j] >= sl:
-                            status = "SL HIT 🔴"
-                            exit_price = sl
-                            gross_pnl = round(-sl_dist * qty, 2)
-                            break
-
-                        if check_time_str >= "15:20":
-                            status = "AUTO SQ OFF ⚪"
-                            exit_price = round(float(closes[j]), 2)
-                            gross_pnl = round((exit_price - entry) * qty, 2) if long_pullback else round((entry - exit_price) * qty, 2)
-                            break
-
-                    est_tax = estimate_charges(entry, exit_price, qty)
-                    net_pnl = round(gross_pnl - est_tax, 2)
-
-                    all_signals.append({
-                        "Time": candle_time_str,
-                        "Symbol": symbol.replace(".NS", ""),
-                        "Type": trade_type,
-                        "Qty": qty,
-                        "Entry": entry,
-                        "SL (14 Pts)": sl,
-                        "Target (25 Pts)": target,
-                        "CMP/Exit": exit_price,
-                        "Status": status,
-                        "Gross P&L (₹)": gross_pnl,
-                        "Tax/Charges (₹)": est_tax,
-                        "Net P&L (₹)": net_pnl
-                    })
-
-                    break
-
+                st.session_state.trade_log[candle_key] = {
+                    "SymbolRaw": symbol,
+                    "EntryIdx": i,
+                    "IsLong": is_long,
+                    "Time": t_str,
+                    "Symbol": symbol.replace(".NS", ""),
+                    "Type": "BUY ðŸŸ¢" if is_long else "SELL ðŸ”´",
+                    "Qty": qty,
+                    "Entry": entry,
+                    "SL": sl,
+                    "Target": target,
+                    "Status": "LIVE ðŸŸ¡",
+                    "CMP/Exit": entry,
+                    "Gross P&L (â‚¹)": 0.0,
+                    "Tax/Charges (â‚¹)": "-",
+                    "Net P&L (â‚¹)": "-",
+                }
         except Exception:
             continue
 
-    return pd.DataFrame(all_signals)
 
 # -----------------------------------------------------------------------------
-# REAL-TIME RENDER (Auto-Refresh Every 10 Seconds)
+# RENDER (auto-refresh every 10 seconds)
 # -----------------------------------------------------------------------------
 @st.fragment(run_every=10)
 def render_dashboard():
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    current_date = now_ist.strftime("%Y-%m-%d")
-    current_time = now_ist.strftime("%H:%M:%S")
-
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING REAL LIVE MARKET" if market_active else "🔴 MARKET CLOSED"
+    status_text = "ðŸŸ¢ SCANNING REAL LIVE MARKET" if market_active else "ðŸ”´ MARKET CLOSED"
 
-    df_signals = fetch_live_signals()
+    if market_active:
+        scan_and_update()
+
+    trades = list(st.session_state.trade_log.values())
+    df_signals = pd.DataFrame(trades)
 
     if not df_signals.empty:
         total_trades = len(df_signals)
-        live_trades = len(df_signals[df_signals["Status"] == "LIVE 🟡"])
-        targets_hit = len(df_signals[df_signals["Status"] == "TARGET 🟢"])
-        sl_hit = len(df_signals[df_signals["Status"] == "SL HIT 🔴"])
-        
-        total_gross_pnl = round(df_signals["Gross P&L (₹)"].sum(), 2)
-        total_charges = round(df_signals["Tax/Charges (₹)"].sum(), 2)
-        total_net_pnl = round(df_signals["Net P&L (₹)"].sum(), 2)
-    else:
-        total_trades = 0
-        live_trades = 0
-        targets_hit = 0
-        sl_hit = 0
-        total_gross_pnl = 0.0
-        total_charges = 0.0
-        total_net_pnl = 0.0
+        live_trades = len(df_signals[df_signals["Status"] == "LIVE ðŸŸ¡"])
+        targets_hit = len(df_signals[df_signals["Status"] == "TARGET ðŸŸ¢"])
+        sl_hit = len(df_signals[df_signals["Status"] == "SL HIT ðŸ”´"])
 
-    gross_pnl_color = "#4CAF50" if total_gross_pnl >= 0 else "#FF5252"
-    net_pnl_color = "#4CAF50" if total_net_pnl >= 0 else "#FF5252"
+        closed = df_signals[df_signals["Status"] != "LIVE ðŸŸ¡"]
+        total_gross_pnl = round(pd.to_numeric(closed["Gross P&L (â‚¹)"], errors="coerce").sum(), 2) if not closed.empty else 0.0
+        total_charges = round(pd.to_numeric(closed["Tax/Charges (â‚¹)"], errors="coerce").sum(), 2) if not closed.empty else 0.0
+        total_net_pnl = round(pd.to_numeric(closed["Net P&L (â‚¹)"], errors="coerce").sum(), 2) if not closed.empty else 0.0
+    else:
+        total_trades = live_trades = targets_hit = sl_hit = 0
+        total_gross_pnl = total_charges = total_net_pnl = 0.0
+
+    gross_color = "#4CAF50" if total_gross_pnl >= 0 else "#FF5252"
+    net_color = "#4CAF50" if total_net_pnl >= 0 else "#FF5252"
 
     st.markdown(f"""
         <div class="status-card">
-            <b>Status:</b> {status_text} | <b>Date:</b> {current_date} | <b>Time (IST):</b> {current_time}
+            <b>Status:</b> {status_text} | <b>Date:</b> {now_ist.strftime("%Y-%m-%d")} | <b>Time (IST):</b> {now_ist.strftime("%H:%M:%S")}
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown(f"""
         <div class="pnl-card">
-            📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} <br>
-            💵 <b>Gross P&L:</b> <span style="color:{gross_pnl_color}; font-weight:bold;">₹{total_gross_pnl}</span> | 
-            🧾 <b>Est. Taxes & Charges:</b> <span style="color:#FF9800; font-weight:bold;">₹{total_charges}</span> | 
-            🎯 <b>NET IN-HAND P&L:</b> <span style="color:{net_pnl_color}; font-weight:bold;">₹{total_net_pnl}</span>
+            ðŸ“Š <b>Cap:</b> â‚¹{int(TOTAL_CAPITAL):,} | <b>Active LIVE:</b> {live_trades}/{MAX_ACTIVE_TRADES} | <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} <br>
+            ðŸ’µ <b>Gross P&L (closed):</b> <span style="color:{gross_color}; font-weight:bold;">â‚¹{total_gross_pnl}</span> |
+            ðŸ§¾ <b>Est. Taxes:</b> <span style="color:#FF9800; font-weight:bold;">â‚¹{total_charges}</span> |
+            ðŸŽ¯ <b>NET P&L:</b> <span style="color:{net_color}; font-weight:bold;">â‚¹{total_net_pnl}</span>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Live Intraday Trade Terminal (Strict 14 SL / 25 Target)")
+    st.markdown("### ðŸ“‹ Live Intraday Trade Terminal")
 
     if not df_signals.empty:
-        st.dataframe(
-            df_signals[
-                [
-                    "Time",
-                    "Symbol",
-                    "Type",
-                    "Qty",
-                    "Entry",
-                    "SL (14 Pts)",
-                    "Target (25 Pts)",
-                    "CMP/Exit",
-                    "Status",
-                    "Gross P&L (₹)",
-                    "Tax/Charges (₹)",
-                    "Net P&L (₹)"
-                ]
-            ],
-            use_container_width=True,
-        )
+        display_cols = [
+            "Time", "Symbol", "Type", "Qty", "Entry", "SL", "Target",
+            "CMP/Exit", "Status", "Gross P&L (â‚¹)", "Tax/Charges (â‚¹)", "Net P&L (â‚¹)"
+        ]
+        st.dataframe(df_signals[display_cols].iloc[::-1], use_container_width=True)
     else:
         st.info("Market open hone par live signals scan ho kar auto-appear honge.")
+
 
 render_dashboard()
