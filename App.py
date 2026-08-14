@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="REAL LIVE Intraday Scanner (Under ₹300)", layout="wide"
+    page_title="REAL LIVE Intraday Scanner (With Net P&L)", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🔴 REAL-TIME LIVE INTRADAY DASHBOARD (50 Stocks Under ₹300)")
+st.markdown("### 🔴 REAL-TIME LIVE INTRADAY DASHBOARD (With Taxes & Brokerage)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
@@ -110,6 +110,35 @@ def calculate_atr(df, period=14):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
+# Intraday Charges Estimate Function (Brokerage + STT + Exchange Charges + GST + Stamp Duty)
+def estimate_charges(entry_price, exit_price, qty):
+    buy_turnover = entry_price * qty
+    sell_turnover = exit_price * qty
+    total_turnover = buy_turnover + sell_turnover
+    
+    # Standard Discount Brokerage (₹20 per executed order or 0.03% whichever is lower)
+    brokerage_buy = min(20.0, buy_turnover * 0.0003)
+    brokerage_sell = min(20.0, sell_turnover * 0.0003)
+    total_brokerage = brokerage_buy + brokerage_sell
+    
+    # STT (0.025% on Sell side for Intraday Equity)
+    stt = sell_turnover * 0.00025
+    
+    # Exchange Turnover Charges (NSE: ~0.00297%)
+    exchange_charges = total_turnover * 0.0000297
+    
+    # GST (18% on Brokerage + Exchange Charges)
+    gst = (total_brokerage + exchange_charges) * 0.18
+    
+    # Stamp Duty (0.003% on Buy side)
+    stamp_duty = buy_turnover * 0.00003
+    
+    # SEBI Charges (~₹10 per crore)
+    sebi_charges = total_turnover * 0.0000001
+    
+    total_tax_and_charges = total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges
+    return round(total_tax_and_charges, 2)
+
 # -----------------------------------------------------------------------------
 # REAL-TIME LIVE SCANNER LOGIC
 # -----------------------------------------------------------------------------
@@ -119,7 +148,6 @@ def fetch_live_signals():
     for symbol in UNDER_300_WATCHLIST:
         try:
             ticker = yf.Ticker(symbol)
-            # Direct Real-Time 5m Data Fetch
             df = ticker.history(period="1d", interval="5m")
 
             if df.empty or len(df) < 20:
@@ -137,7 +165,6 @@ def fetch_live_signals():
             atrs = df["ATR"].values
             timestamps = df.index
             
-            # Real-time Last CMP
             cmp_price = round(float(closes[-1]), 2)
 
             for i in range(20, len(df)):
@@ -167,7 +194,6 @@ def fetch_live_signals():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    # REAL DYNAMIC BUFFER ATR LOGIC
                     sl_dist = round(float(curr_atr + (entry * 0.0025)), 2)
                     target_dist = round(float(sl_dist * 1.20), 2)
 
@@ -179,47 +205,57 @@ def fetch_live_signals():
                         target = round(entry - target_dist, 2)
 
                     status = "LIVE 🟡"
-                    pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
+                    exit_price = cmp_price
+                    gross_pnl = round((cmp_price - entry) * qty, 2) if long_pullback else round((entry - cmp_price) * qty, 2)
 
-                    # Check historical progression inside today's session
                     for j in range(i + 1, len(df)):
                         check_time_str = timestamps[j].strftime("%H:%M")
 
                         if long_pullback and highs[j] >= target:
                             status = "TARGET 🟢"
-                            pnl = round(target_dist * qty, 2)
+                            exit_price = target
+                            gross_pnl = round(target_dist * qty, 2)
                             break
                         elif not long_pullback and lows[j] <= target:
                             status = "TARGET 🟢"
-                            pnl = round(target_dist * qty, 2)
+                            exit_price = target
+                            gross_pnl = round(target_dist * qty, 2)
                             break
 
                         if long_pullback and lows[j] <= sl:
                             status = "SL HIT 🔴"
-                            pnl = round(-sl_dist * qty, 2)
+                            exit_price = sl
+                            gross_pnl = round(-sl_dist * qty, 2)
                             break
                         elif not long_pullback and highs[j] >= sl:
                             status = "SL HIT 🔴"
-                            pnl = round(-sl_dist * qty, 2)
+                            exit_price = sl
+                            gross_pnl = round(-sl_dist * qty, 2)
                             break
 
                         if check_time_str >= "15:20":
                             status = "AUTO SQ OFF ⚪"
                             exit_price = round(float(closes[j]), 2)
-                            pnl = round((exit_price - entry) * qty, 2) if long_pullback else round((entry - exit_price) * qty, 2)
+                            gross_pnl = round((exit_price - entry) * qty, 2) if long_pullback else round((entry - exit_price) * qty, 2)
                             break
+
+                    # Charges and Net PnL Calculation
+                    est_tax = estimate_charges(entry, exit_price, qty)
+                    net_pnl = round(gross_pnl - est_tax, 2)
 
                     all_signals.append({
                         "Time": candle_time_str,
                         "Symbol": symbol.replace(".NS", ""),
                         "Type": trade_type,
                         "Qty": qty,
-                        "Entry Price": entry,
-                        "Stop Loss (SL)": sl,
+                        "Entry": entry,
+                        "SL": sl,
                         "Target": target,
-                        "CMP": cmp_price,
+                        "CMP/Exit": exit_price,
                         "Status": status,
-                        "P&L (₹)": pnl
+                        "Gross P&L (₹)": gross_pnl,
+                        "Tax/Charges (₹)": est_tax,
+                        "Net P&L (₹)": net_pnl
                     })
 
                     break
@@ -239,7 +275,7 @@ def render_dashboard():
     current_time = now_ist.strftime("%H:%M:%S")
 
     market_active = is_market_open(now_ist)
-    status_text = "🟢 SCANNING REAL LIVE MARKET" if market_active else "🔴 MARKET CLOSED (REAL-TIME POSITIONS FIXED)"
+    status_text = "🟢 SCANNING REAL LIVE MARKET" if market_active else "🔴 MARKET CLOSED"
 
     df_signals = fetch_live_signals()
 
@@ -249,22 +285,20 @@ def render_dashboard():
         targets_hit = len(df_signals[df_signals["Status"] == "TARGET 🟢"])
         sl_hit = len(df_signals[df_signals["Status"] == "SL HIT 🔴"])
         
-        df_sq_off = df_signals[df_signals["Status"] == "AUTO SQ OFF ⚪"]
-        auto_sq_off_count = len(df_sq_off)
-        auto_sq_off_pnl = round(df_sq_off["P&L (₹)"].sum(), 2) if not df_sq_off.empty else 0.0
-
-        overall_pnl = round(df_signals["P&L (₹)"].sum(), 2)
+        total_gross_pnl = round(df_signals["Gross P&L (₹)"].sum(), 2)
+        total_charges = round(df_signals["Tax/Charges (₹)"].sum(), 2)
+        total_net_pnl = round(df_signals["Net P&L (₹)"].sum(), 2)
     else:
         total_trades = 0
         live_trades = 0
         targets_hit = 0
         sl_hit = 0
-        auto_sq_off_count = 0
-        auto_sq_off_pnl = 0.0
-        overall_pnl = 0.0
+        total_gross_pnl = 0.0
+        total_charges = 0.0
+        total_net_pnl = 0.0
 
-    pnl_color = "#4CAF50" if overall_pnl >= 0 else "#FF5252"
-    sq_off_pnl_color = "#4CAF50" if auto_sq_off_pnl >= 0 else "#FF5252"
+    gross_pnl_color = "#4CAF50" if total_gross_pnl >= 0 else "#FF5252"
+    net_pnl_color = "#4CAF50" if total_net_pnl >= 0 else "#FF5252"
 
     st.markdown(f"""
         <div class="status-card">
@@ -275,12 +309,14 @@ def render_dashboard():
     st.markdown(f"""
         <div class="pnl-card">
             📊 <b>Cap:</b> ₹50k | <b>Active LIVE:</b> {live_trades} | <b>Total Trades:</b> {total_trades} | <b>Targets:</b> {targets_hit} | <b>SL:</b> {sl_hit} <br>
-            ⚪ <b>Auto Sq-Off Trades (3:20 PM):</b> {auto_sq_off_count} | <b>Sq-Off P&L:</b> <span style="color:{sq_off_pnl_color}; font-weight:bold;">₹{auto_sq_off_pnl}</span> | <b>Net Total P&L:</b> <span style="color:{pnl_color}; font-weight:bold;">₹{overall_pnl}</span>
+            💵 <b>Gross P&L:</b> <span style="color:{gross_pnl_color}; font-weight:bold;">₹{total_gross_pnl}</span> | 
+            🧾 <b>Est. Taxes & Charges:</b> <span style="color:#FF9800; font-weight:bold;">₹{total_charges}</span> | 
+            🎯 <b>NET IN-HAND P&L:</b> <span style="color:{net_pnl_color}; font-weight:bold;">₹{total_net_pnl}</span>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Live Intraday Trade Terminal")
+    st.markdown("### 📋 Live Intraday Trade Terminal (Gross vs Net P&L)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -290,12 +326,14 @@ def render_dashboard():
                     "Symbol",
                     "Type",
                     "Qty",
-                    "Entry Price",
-                    "Stop Loss (SL)",
+                    "Entry",
+                    "SL",
                     "Target",
-                    "CMP",
+                    "CMP/Exit",
                     "Status",
-                    "P&L (₹)"
+                    "Gross P&L (₹)",
+                    "Tax/Charges (₹)",
+                    "Net P&L (₹)"
                 ]
             ],
             use_container_width=True,
