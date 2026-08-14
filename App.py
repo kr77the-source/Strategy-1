@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="REAL LIVE Intraday Scanner (With Net P&L)", layout="wide"
+    page_title="Intraday Scanner (14 SL / 30 Target)", layout="wide"
 )
 
 # -----------------------------------------------------------------------------
@@ -57,7 +57,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("### 🔴 REAL-TIME LIVE INTRADAY DASHBOARD (With Taxes & Brokerage)")
+st.markdown("### 🔴 LIVE INTRADAY DASHBOARD (Fixed SL: 14 Pts | Target: 30 Pts)")
 
 # -----------------------------------------------------------------------------
 # WATCHLIST: 50 High-Volume Stocks Under ₹300 (12 Sectors)
@@ -103,44 +103,22 @@ def calculate_vwap(df):
     tp = (df['High'] + df['Low'] + df['Close']) / 3
     return (tp * v).cumsum() / v.cumsum()
 
-def calculate_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-# Intraday Charges Estimate Function (Brokerage + STT + Exchange Charges + GST + Stamp Duty)
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
     total_turnover = buy_turnover + sell_turnover
     
-    # Standard Discount Brokerage (₹20 per executed order or 0.03% whichever is lower)
-    brokerage_buy = min(20.0, buy_turnover * 0.0003)
-    brokerage_sell = min(20.0, sell_turnover * 0.0003)
-    total_brokerage = brokerage_buy + brokerage_sell
-    
-    # STT (0.025% on Sell side for Intraday Equity)
+    total_brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
     stt = sell_turnover * 0.00025
-    
-    # Exchange Turnover Charges (NSE: ~0.00297%)
     exchange_charges = total_turnover * 0.0000297
-    
-    # GST (18% on Brokerage + Exchange Charges)
     gst = (total_brokerage + exchange_charges) * 0.18
-    
-    # Stamp Duty (0.003% on Buy side)
     stamp_duty = buy_turnover * 0.00003
-    
-    # SEBI Charges (~₹10 per crore)
     sebi_charges = total_turnover * 0.0000001
     
-    total_tax_and_charges = total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges
-    return round(total_tax_and_charges, 2)
+    return round(total_brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 # -----------------------------------------------------------------------------
-# REAL-TIME LIVE SCANNER LOGIC
+# REAL-TIME LIVE SCANNER LOGIC (STRICT 14 PTS SL / 30 PTS TARGET)
 # -----------------------------------------------------------------------------
 def fetch_live_signals():
     all_signals = []
@@ -155,14 +133,12 @@ def fetch_live_signals():
 
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['VWAP'] = calculate_vwap(df)
-            df['ATR'] = calculate_atr(df, period=14)
 
             closes = df["Close"].values
             highs = df["High"].values
             lows = df["Low"].values
             ema20 = df["EMA20"].values
             vwap = df["VWAP"].values
-            atrs = df["ATR"].values
             timestamps = df.index
             
             cmp_price = round(float(closes[-1]), 2)
@@ -178,10 +154,6 @@ def fetch_live_signals():
                 curr_low = lows[i]
                 curr_ema = ema20[i]
                 curr_vwap = vwap[i]
-                curr_atr = atrs[i]
-
-                if np.isnan(curr_atr) or curr_atr == 0:
-                    curr_atr = curr_close * 0.005
 
                 bullish_trend = curr_ema > curr_vwap
                 long_pullback = bullish_trend and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -194,8 +166,9 @@ def fetch_live_signals():
                     entry = round(float(curr_close), 2)
                     qty = max(1, int(CAPITAL_PER_STOCK / entry))
 
-                    sl_dist = round(float(curr_atr + (entry * 0.0025)), 2)
-                    target_dist = round(float(sl_dist * 1.20), 2)
+                    # FIXED 14 POINTS SL AND 30 POINTS TARGET
+                    sl_dist = 14.0
+                    target_dist = 30.0
 
                     if long_pullback:
                         sl = round(entry - sl_dist, 2)
@@ -239,7 +212,6 @@ def fetch_live_signals():
                             gross_pnl = round((exit_price - entry) * qty, 2) if long_pullback else round((entry - exit_price) * qty, 2)
                             break
 
-                    # Charges and Net PnL Calculation
                     est_tax = estimate_charges(entry, exit_price, qty)
                     net_pnl = round(gross_pnl - est_tax, 2)
 
@@ -249,8 +221,8 @@ def fetch_live_signals():
                         "Type": trade_type,
                         "Qty": qty,
                         "Entry": entry,
-                        "SL": sl,
-                        "Target": target,
+                        "SL (14 Pts)": sl,
+                        "Target (30 Pts)": target,
                         "CMP/Exit": exit_price,
                         "Status": status,
                         "Gross P&L (₹)": gross_pnl,
@@ -316,7 +288,7 @@ def render_dashboard():
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 📋 Live Intraday Trade Terminal (Gross vs Net P&L)")
+    st.markdown("### 📋 Live Intraday Trade Terminal (Strict 14 SL / 30 Target)")
 
     if not df_signals.empty:
         st.dataframe(
@@ -327,8 +299,8 @@ def render_dashboard():
                     "Type",
                     "Qty",
                     "Entry",
-                    "SL",
-                    "Target",
+                    "SL (14 Pts)",
+                    "Target (30 Pts)",
                     "CMP/Exit",
                     "Status",
                     "Gross P&L (₹)",
