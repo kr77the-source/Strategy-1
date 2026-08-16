@@ -103,17 +103,44 @@ def append_history(row: dict):
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
-    TOTAL_CAPITAL = st.number_input("Total Capital (Rs)", value=50000, step=5000)
-    MAX_ACTIVE_TRADES = st.number_input("Max Active Trades", value=4, min_value=1, max_value=10)
+
+    # ---- Default values live here in ONE place. Change a default? edit only this dict. ----
+    DEFAULT_SETTINGS = {
+        "capital": 50000,
+        "max_trades": 4,
+        "sl_atr_mult": 1.0,
+        "target_atr_mult": 2.0,
+        "trailing_enabled": True,
+        "min_atr_pct_input": 0.20,   # shown value in %, divided by 100 below
+        "one_trade_per_day": True,
+    }
+
+    if st.button("Reset to Default Settings", type="primary"):
+        for _key, _val in DEFAULT_SETTINGS.items():
+            st.session_state[_key] = _val
+        st.rerun()
+
+    TOTAL_CAPITAL = st.number_input(
+        "Total Capital (Rs)", value=DEFAULT_SETTINGS["capital"], step=5000, key="capital"
+    )
+    MAX_ACTIVE_TRADES = st.number_input(
+        "Max Active Trades", value=DEFAULT_SETTINGS["max_trades"], min_value=1, max_value=10, key="max_trades"
+    )
 
     st.subheader("ATR-based SL / Target")
     st.caption("SL and Target scale with each stock's own recent volatility (14-period ATR on 5-min candles).")
-    SL_ATR_MULT = st.number_input("SL = ATR x", value=1.0, step=0.1, format="%.1f")
-    TARGET_ATR_MULT = st.number_input("Target = ATR x", value=2.0, step=0.1, format="%.1f")
+    SL_ATR_MULT = st.number_input(
+        "SL = ATR x", value=DEFAULT_SETTINGS["sl_atr_mult"], step=0.1, format="%.1f", key="sl_atr_mult"
+    )
+    TARGET_ATR_MULT = st.number_input(
+        "Target = ATR x", value=DEFAULT_SETTINGS["target_atr_mult"], step=0.1, format="%.1f", key="target_atr_mult"
+    )
     st.caption(f"Risk:Reward = 1 : {round(TARGET_ATR_MULT/SL_ATR_MULT, 2)}")
 
     st.subheader("Trailing SL / Target")
-    TRAILING_ENABLED = st.checkbox("Enable trailing (let winners run)", value=True)
+    TRAILING_ENABLED = st.checkbox(
+        "Enable trailing (let winners run)", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled"
+    )
     st.caption(
         "ON: jab tak SL hit nahi hota, SL profit ki taraf trail karta rahega aur target bhi "
         "aage badhta rahega (koi fixed profit cap nahi). OFF: purana fixed SL/Target behavior."
@@ -121,11 +148,16 @@ with st.sidebar:
 
     st.subheader("Stock filter (avoid dead / illiquid stocks)")
     st.caption("NOTE: this is % of price PER 5-MIN CANDLE, not daily range â€” typical values are 0.1%-0.4%, not 1-2%.")
-    MIN_ATR_PCT = st.number_input("Min 5-min ATR as % of price", value=0.20, step=0.05, format="%.2f") / 100
+    MIN_ATR_PCT = st.number_input(
+        "Min 5-min ATR as % of price", value=DEFAULT_SETTINGS["min_atr_pct_input"],
+        step=0.05, format="%.2f", key="min_atr_pct_input"
+    ) / 100
     st.caption("Stocks whose 5-min ATR is below this % of price are skipped for the day â€” they rarely move enough to hit target.")
 
     st.subheader("Overtrading control")
-    ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox("Max 1 trade per stock per day", value=True)
+    ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox(
+        "Max 1 trade per stock per day", value=DEFAULT_SETTINGS["one_trade_per_day"], key="one_trade_per_day"
+    )
 
     if st.button("Reset TODAY's live signals (keeps history file)"):
         st.session_state.trade_log = {}
