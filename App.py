@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Intraday Scanner (ATR based, Trailing SL)", layout="wide")
+st.set_page_config(page_title="Intraday Scanner (Quality-filtered, Trailing SL)", layout="wide")
 
 st.markdown("""
     <style>
@@ -104,15 +104,20 @@ def append_history(row: dict):
 with st.sidebar:
     st.header("Settings")
 
-    # ---- Default values live here in ONE place. Change a default? edit only this dict. ----
     DEFAULT_SETTINGS = {
         "capital": 50000,
         "max_trades": 4,
         "sl_atr_mult": 1.0,
         "target_atr_mult": 2.0,
         "trailing_enabled": True,
-        "min_atr_pct_input": 0.20,   # shown value in %, divided by 100 below
+        "min_atr_pct_input": 0.20,
         "one_trade_per_day": True,
+        "adx_filter_enabled": True,
+        "adx_threshold": 20,
+        "volume_filter_enabled": True,
+        "volume_mult": 1.2,
+        "avoid_lunch": True,
+        "signal_strength_frac": 0.3,
     }
 
     if st.button("Reset to Default Settings", type="primary"):
@@ -128,7 +133,6 @@ with st.sidebar:
     )
 
     st.subheader("ATR-based SL / Target")
-    st.caption("SL and Target scale with each stock's own recent volatility (14-period ATR on 5-min candles).")
     SL_ATR_MULT = st.number_input(
         "SL = ATR x", value=DEFAULT_SETTINGS["sl_atr_mult"], step=0.1, format="%.1f", key="sl_atr_mult"
     )
@@ -141,18 +145,40 @@ with st.sidebar:
     TRAILING_ENABLED = st.checkbox(
         "Enable trailing (let winners run)", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled"
     )
-    st.caption(
-        "ON: jab tak SL hit nahi hota, SL profit ki taraf trail karta rahega aur target bhi "
-        "aage badhta rahega (koi fixed profit cap nahi). OFF: purana fixed SL/Target behavior."
-    )
 
-    st.subheader("Stock filter (avoid dead / illiquid stocks)")
-    st.caption("NOTE: this is % of price PER 5-MIN CANDLE, not daily range â€” typical values are 0.1%-0.4%, not 1-2%.")
+    st.subheader("Stock filter (liquidity/volatility)")
+    st.caption("% of price PER 5-MIN CANDLE, not daily range â€” typical values 0.1%-0.4%.")
     MIN_ATR_PCT = st.number_input(
         "Min 5-min ATR as % of price", value=DEFAULT_SETTINGS["min_atr_pct_input"],
         step=0.05, format="%.2f", key="min_atr_pct_input"
     ) / 100
-    st.caption("Stocks whose 5-min ATR is below this % of price are skipped for the day â€” they rarely move enough to hit target.")
+
+    st.subheader("Signal quality filters (fix low win-rate)")
+    ADX_FILTER_ENABLED = st.checkbox(
+        "Require trending market (ADX filter)", value=DEFAULT_SETTINGS["adx_filter_enabled"], key="adx_filter_enabled"
+    )
+    ADX_THRESHOLD = st.number_input(
+        "Min ADX (14-period)", value=DEFAULT_SETTINGS["adx_threshold"], step=1, key="adx_threshold"
+    )
+    st.caption("Higher ADX = stronger trend. Below ~20 the market is usually choppy/sideways â€” signals here tend to fail.")
+
+    VOLUME_FILTER_ENABLED = st.checkbox(
+        "Require volume confirmation", value=DEFAULT_SETTINGS["volume_filter_enabled"], key="volume_filter_enabled"
+    )
+    VOLUME_MULT = st.number_input(
+        "Signal candle volume >= avg volume x", value=DEFAULT_SETTINGS["volume_mult"],
+        step=0.1, format="%.1f", key="volume_mult"
+    )
+
+    AVOID_LUNCH = st.checkbox(
+        "Avoid lunch-hour signals (12:00-13:15 IST)", value=DEFAULT_SETTINGS["avoid_lunch"], key="avoid_lunch"
+    )
+
+    SIGNAL_STRENGTH_FRAC = st.number_input(
+        "Min EMA-VWAP gap (x ATR)", value=DEFAULT_SETTINGS["signal_strength_frac"],
+        step=0.05, format="%.2f", key="signal_strength_frac"
+    )
+    st.caption("EMA and VWAP must be separated by at least this fraction of ATR â€” filters out weak/borderline crosses.")
 
     st.subheader("Overtrading control")
     ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox(
@@ -202,6 +228,25 @@ def calculate_atr(df, period=14):
     return tr.rolling(period, min_periods=period).mean()
 
 
+def calculate_adx(df, period=14):
+    high, low, close = df["High"], df["Low"], df["Close"]
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(period, min_periods=period).mean()
+
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(period, min_periods=period).mean() / atr.replace(0, np.nan)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(period, min_periods=period).mean() / atr.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.rolling(period, min_periods=period).mean()
+
+
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
@@ -217,18 +262,23 @@ def estimate_charges(entry_price, exit_price, qty):
     return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 
+def passes_quality_filters(t_str, curr_ema, curr_vwap, curr_atr, curr_volume, avg_volume, curr_adx,
+                            adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac):
+    if avoid_lunch and ("12:00" <= t_str < "13:15"):
+        return False
+    if adx_enabled:
+        if np.isnan(curr_adx) or curr_adx < adx_threshold:
+            return False
+    if vol_enabled:
+        if np.isnan(avg_volume) or avg_volume <= 0 or curr_volume < avg_volume * vol_mult:
+            return False
+    if abs(curr_ema - curr_vwap) < curr_atr * signal_strength_frac:
+        return False
+    return True
+
+
 # -----------------------------------------------------------------------------
-# SHARED TRADE SIMULATION (used by both live scanner and backtest so the
-# trailing logic behaves identically in both places).
-#
-# When trailing_enabled=True:
-#   - SL only ever moves in the trade's favour (never loosens).
-#   - "Target" is not a hard exit â€” it keeps extending as price makes new
-#     favourable extremes. The trade only closes on trailing-SL hit or EOD.
-#   - If the SL is hit AFTER it has trailed past entry (i.e. exit price is
-#     already in profit), status is TRAIL instead of SL, so you can tell a
-#     locked-in profit apart from a genuine loss.
-# When trailing_enabled=False: original fixed SL / fixed Target behaviour.
+# SHARED TRADE SIMULATION
 # -----------------------------------------------------------------------------
 def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
                     atr_at_entry, sl_atr_mult, target_atr_mult, trailing_enabled):
@@ -326,13 +376,15 @@ def scan_and_update():
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
             df["VWAP"] = calculate_vwap(df)
             df["ATR"] = calculate_atr(df, 14)
+            df["ADX"] = calculate_adx(df, 14)
+            df["AvgVol"] = df["Volume"].rolling(20, min_periods=20).mean()
 
             closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
             ema20, vwap, atr = df["EMA20"].values, df["VWAP"].values, df["ATR"].values
+            adx, volume, avg_vol = df["ADX"].values, df["Volume"].values, df["AvgVol"].values
             timestamps = df.index
 
-            # --- Update LIVE trades (fully re-simulated each cycle â€” deterministic
-            # since past candles never change, so this is safe and stateless) ---
+            # --- Update LIVE trades ---
             for key, trade in list(st.session_state.trade_log.items()):
                 if trade["SymbolRaw"] != symbol or trade["Status"] != "LIVE":
                     continue
@@ -391,6 +443,12 @@ def scan_and_update():
                 if curr_atr < curr_close * MIN_ATR_PCT:
                     continue
                 if ONE_TRADE_PER_STOCK_PER_DAY and (symbol, today_str) in st.session_state.traded_today:
+                    continue
+                if not passes_quality_filters(
+                    t_str, curr_ema, curr_vwap, curr_atr, volume[i], avg_vol[i], adx[i],
+                    ADX_FILTER_ENABLED, ADX_THRESHOLD, VOLUME_FILTER_ENABLED, VOLUME_MULT,
+                    AVOID_LUNCH, SIGNAL_STRENGTH_FRAC,
+                ):
                     continue
 
                 bullish = curr_ema > curr_vwap
@@ -502,10 +560,12 @@ def render_dashboard():
 
 
 # -----------------------------------------------------------------------------
-# BACKTEST: last 60 days, same trailing / fixed logic as live, via simulate_trade().
+# BACKTEST: last 60 days, same quality filters + trailing logic as live.
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailing_enabled, capital_per_stock, symbols):
+def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailing_enabled,
+                  adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac,
+                  capital_per_stock, symbols):
     try:
         data = yf.download(
             tickers=" ".join(symbols),
@@ -536,9 +596,12 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
             day_df["EMA20"] = day_df["Close"].ewm(span=20, adjust=False).mean()
             day_df["VWAP"] = calculate_vwap(day_df)
             day_df["ATR"] = calculate_atr(day_df, 14)
+            day_df["ADX"] = calculate_adx(day_df, 14)
+            day_df["AvgVol"] = day_df["Volume"].rolling(20, min_periods=20).mean()
 
             closes, highs, lows = day_df["Close"].values, day_df["High"].values, day_df["Low"].values
             ema20, vwap, atr = day_df["EMA20"].values, day_df["VWAP"].values, day_df["ATR"].values
+            adx, volume, avg_vol = day_df["ADX"].values, day_df["Volume"].values, day_df["AvgVol"].values
             timestamps = day_df.index
 
             traded_this_day = False
@@ -561,6 +624,12 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
                 if curr_atr < curr_close * min_atr_pct:
                     i += 1
                     continue
+                if not passes_quality_filters(
+                    t_str, curr_ema, curr_vwap, curr_atr, volume[i], avg_vol[i], adx[i],
+                    adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac,
+                ):
+                    i += 1
+                    continue
 
                 bullish = curr_ema > curr_vwap
                 long_pullback = bullish and (curr_low <= curr_ema) and (curr_close > curr_ema) and (curr_close > curr_vwap)
@@ -579,7 +648,7 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
                     highs, lows, closes, timestamps, i + 1, entry, is_long,
                     curr_atr, sl_atr_mult, target_atr_mult, trailing_enabled,
                 )
-                if status == "LIVE":  # ran out of candles for the day without closing â€” treat as sq-off at last close
+                if status == "LIVE":
                     status, exit_price = "SQOFF", round(float(closes[-1]), 2)
 
                 gross = round((exit_price - entry) * qty, 2) if is_long else round((entry - exit_price) * qty, 2)
@@ -601,16 +670,14 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
 
 def render_backtest_tab():
     st.markdown("### Backtest (last 60 days)")
-    st.caption(
-        "SL/Target ATR-based hain. Trailing ON hai to profit lock hote hue winners aage chalenge; "
-        "OFF hai to fixed SL/Target wapas aa jaayega."
-    )
+    st.caption("ATR-based SL/Target + trailing + signal-quality filters, exactly as set in the sidebar.")
 
     if st.button("Run Backtest"):
         with st.spinner("Backtest chal raha hai, thoda time lagega..."):
             bt_df = run_backtest(
-                SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT,
-                ONE_TRADE_PER_STOCK_PER_DAY, TRAILING_ENABLED, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST
+                SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT, ONE_TRADE_PER_STOCK_PER_DAY, TRAILING_ENABLED,
+                ADX_FILTER_ENABLED, ADX_THRESHOLD, VOLUME_FILTER_ENABLED, VOLUME_MULT,
+                AVOID_LUNCH, SIGNAL_STRENGTH_FRAC, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST
             )
         st.session_state.backtest_result = bt_df
 
@@ -621,7 +688,7 @@ def render_backtest_tab():
         return
 
     if bt_df.empty:
-        st.warning("Koi trade nahi mila is period me in settings ke saath â€” filter shayad zyada strict hai.")
+        st.warning("Koi trade nahi mila is period me in settings ke saath â€” filters shayad zyada strict hain.")
         return
 
     total_trades = len(bt_df)
@@ -631,7 +698,6 @@ def render_backtest_tab():
     sl_hits = len(bt_df[bt_df["Status"] == "SL"])
     sqoff = len(bt_df[bt_df["Status"] == "SQOFF"])
     win_rate = round((profitable / total_trades) * 100, 1) if total_trades else 0.0
-    sqoff_rate = round((sqoff / total_trades) * 100, 1) if total_trades else 0.0
     total_gross = round(bt_df["GrossPnL"].sum(), 2)
     total_charges = round(bt_df["Charges"].sum(), 2)
     total_net = round(bt_df["NetPnL"].sum(), 2)
@@ -643,19 +709,13 @@ def render_backtest_tab():
         <div class="pnl-card">
             <b>Total Trades:</b> {total_trades} | <b>Profitable (Target+Trail):</b> {profitable} ({win_rate}%)
             &nbsp;[Target: {targets}, Trail-locked: {trails}] |
-            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff} ({sqoff_rate}%)<br><br>
+            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff}<br><br>
             <b>Gross P&L:</b> {RUPEE}{total_gross} |
             <b>Total Charges:</b> {RUPEE}{total_charges} |
             <b>Net P&L:</b> <span style="color:{net_color}; font-weight:bold;">{RUPEE}{total_net}</span><br>
             <b>Avg Net P&L / trade:</b> {RUPEE}{avg_net_per_trade}
         </div>
     """, unsafe_allow_html=True)
-
-    if sqoff_rate > 50:
-        st.warning(
-            f"{sqoff_rate}% trades sirf auto sq-off ho rahe hain (na SL na trail-exit). "
-            "MIN_ATR_PCT filter dheela karo (kam karo) ya SL_ATR_MULT kam karo taaki jaldi trail shuru ho."
-        )
 
     daily = bt_df.groupby("Date")["NetPnL"].sum().reset_index()
     daily["CumulativeNetPnL"] = daily["NetPnL"].cumsum()
@@ -684,7 +744,7 @@ def render_backtest_tab():
 # -----------------------------------------------------------------------------
 # MAIN LAYOUT
 # -----------------------------------------------------------------------------
-st.markdown("### INTRADAY SCANNER (ATR based, Trailing SL/Target)")
+st.markdown("### INTRADAY SCANNER (Quality-filtered, ATR + Trailing SL)")
 tab_live, tab_backtest = st.tabs(["Live Dashboard", "Backtest"])
 
 with tab_live:
