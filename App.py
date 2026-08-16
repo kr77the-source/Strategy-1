@@ -110,6 +110,8 @@ with st.sidebar:
         "sl_atr_mult": 1.0,
         "target_atr_mult": 2.0,
         "trailing_enabled": True,
+        "breakeven_trigger_mult": 1.0,
+        "trail_dist_mult": 1.5,
         "min_atr_pct_input": 0.20,
         "one_trade_per_day": True,
         "adx_filter_enabled": True,
@@ -144,6 +146,18 @@ with st.sidebar:
     st.subheader("Trailing SL / Target")
     TRAILING_ENABLED = st.checkbox(
         "Enable trailing (let winners run)", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled"
+    )
+    BREAKEVEN_TRIGGER_MULT = st.number_input(
+        "Move SL to breakeven after (x ATR profit)", value=DEFAULT_SETTINGS["breakeven_trigger_mult"],
+        step=0.1, format="%.1f", key="breakeven_trigger_mult"
+    )
+    TRAIL_DIST_MULT = st.number_input(
+        "Trail distance after breakeven (x ATR)", value=DEFAULT_SETTINGS["trail_dist_mult"],
+        step=0.1, format="%.1f", key="trail_dist_mult"
+    )
+    st.caption(
+        "SL tab tak fixed rehta hai jab tak profit 'breakeven trigger' na cross kare. Uske baad SL breakeven "
+        "pe jump karta hai, phir wider distance se trail karta hai â€” isse chhoti pullbacks pe premature exit nahi hota."
     )
 
     st.subheader("Stock filter (liquidity/volatility)")
@@ -281,10 +295,12 @@ def passes_quality_filters(t_str, curr_ema, curr_vwap, curr_atr, curr_volume, av
 # SHARED TRADE SIMULATION
 # -----------------------------------------------------------------------------
 def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
-                    atr_at_entry, sl_atr_mult, target_atr_mult, trailing_enabled):
+                    atr_at_entry, sl_atr_mult, target_atr_mult, trailing_enabled,
+                    breakeven_trigger_mult, trail_dist_mult):
     sl = round(entry - atr_at_entry * sl_atr_mult, 2) if is_long else round(entry + atr_at_entry * sl_atr_mult, 2)
     target = round(entry + atr_at_entry * target_atr_mult, 2) if is_long else round(entry - atr_at_entry * target_atr_mult, 2)
     peak = entry
+    stage = "initial"  # "initial" (fixed SL) -> "trailing" (breakeven reached, wider trail active)
 
     status, exit_price, exit_idx = "LIVE", None, len(highs) - 1
 
@@ -294,13 +310,23 @@ def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
         if trailing_enabled:
             if is_long:
                 peak = max(peak, highs[j])
-                trail_sl = round(peak - atr_at_entry * sl_atr_mult, 2)
-                sl = max(sl, trail_sl)
+                profit_atr = (peak - entry) / atr_at_entry
+                if stage == "initial" and profit_atr >= breakeven_trigger_mult:
+                    stage = "trailing"
+                    sl = max(sl, entry)
+                if stage == "trailing":
+                    trail_sl = round(peak - atr_at_entry * trail_dist_mult, 2)
+                    sl = max(sl, trail_sl)
                 target = round(peak + atr_at_entry * target_atr_mult, 2)
             else:
                 peak = min(peak, lows[j])
-                trail_sl = round(peak + atr_at_entry * sl_atr_mult, 2)
-                sl = min(sl, trail_sl)
+                profit_atr = (entry - peak) / atr_at_entry
+                if stage == "initial" and profit_atr >= breakeven_trigger_mult:
+                    stage = "trailing"
+                    sl = min(sl, entry)
+                if stage == "trailing":
+                    trail_sl = round(peak + atr_at_entry * trail_dist_mult, 2)
+                    sl = min(sl, trail_sl)
                 target = round(peak - atr_at_entry * target_atr_mult, 2)
 
         hit_sl = (is_long and lows[j] <= sl) or (not is_long and highs[j] >= sl)
@@ -395,6 +421,7 @@ def scan_and_update():
                     highs, lows, closes, timestamps, entry_idx + 1,
                     trade["Entry"], is_long, trade["ATRVal"],
                     SL_ATR_MULT, TARGET_ATR_MULT, TRAILING_ENABLED,
+                    BREAKEVEN_TRIGGER_MULT, TRAIL_DIST_MULT,
                 )
 
                 trade["SL"], trade["Target"] = final_sl, final_target
@@ -564,6 +591,7 @@ def render_dashboard():
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailing_enabled,
+                  breakeven_trigger_mult, trail_dist_mult,
                   adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac,
                   capital_per_stock, symbols):
     try:
@@ -647,6 +675,7 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
                 status, exit_price, exit_j, final_sl, final_target = simulate_trade(
                     highs, lows, closes, timestamps, i + 1, entry, is_long,
                     curr_atr, sl_atr_mult, target_atr_mult, trailing_enabled,
+                    breakeven_trigger_mult, trail_dist_mult,
                 )
                 if status == "LIVE":
                     status, exit_price = "SQOFF", round(float(closes[-1]), 2)
@@ -676,6 +705,7 @@ def render_backtest_tab():
         with st.spinner("Backtest chal raha hai, thoda time lagega..."):
             bt_df = run_backtest(
                 SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT, ONE_TRADE_PER_STOCK_PER_DAY, TRAILING_ENABLED,
+                BREAKEVEN_TRIGGER_MULT, TRAIL_DIST_MULT,
                 ADX_FILTER_ENABLED, ADX_THRESHOLD, VOLUME_FILTER_ENABLED, VOLUME_MULT,
                 AVOID_LUNCH, SIGNAL_STRENGTH_FRAC, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST
             )
