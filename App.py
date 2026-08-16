@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Intraday Scanner (Quality-filtered, Trailing SL)", layout="wide")
+st.set_page_config(page_title="Intraday Scanner (Reverse Trading / Contra Mode)", layout="wide")
 
 st.markdown("""
     <style>
@@ -76,12 +76,11 @@ UNDER_300_WATCHLIST = [
 # -----------------------------------------------------------------------------
 # PERSISTENT STORAGE (CSV)
 # -----------------------------------------------------------------------------
-HISTORY_FILE = "trade_history.csv"
+HISTORY_FILE = "trade_history_reverse.csv"
 HISTORY_COLUMNS = [
     "Date", "Time", "Symbol", "Type", "Qty", "Entry", "SL", "Target",
     "Exit", "Status", "GrossPnL", "Charges", "NetPnL", "ATR"
 ]
-
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -91,18 +90,16 @@ def load_history():
             return pd.DataFrame(columns=HISTORY_COLUMNS)
     return pd.DataFrame(columns=HISTORY_COLUMNS)
 
-
 def append_history(row: dict):
     df = load_history()
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     df.to_csv(HISTORY_FILE, index=False)
 
-
 # -----------------------------------------------------------------------------
 # SIDEBAR SETTINGS
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Settings")
+    st.header("Settings (Reverse Mode)")
 
     DEFAULT_SETTINGS = {
         "capital": 50000,
@@ -141,11 +138,10 @@ with st.sidebar:
     TARGET_ATR_MULT = st.number_input(
         "Target = ATR x", value=DEFAULT_SETTINGS["target_atr_mult"], step=0.1, format="%.1f", key="target_atr_mult"
     )
-    st.caption(f"Risk:Reward = 1 : {round(TARGET_ATR_MULT/SL_ATR_MULT, 2)}")
 
     st.subheader("Trailing SL / Target")
     TRAILING_ENABLED = st.checkbox(
-        "Enable trailing (let winners run)", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled"
+        "Enable trailing", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled"
     )
     BREAKEVEN_TRIGGER_MULT = st.number_input(
         "Move SL to breakeven after (x ATR profit)", value=DEFAULT_SETTINGS["breakeven_trigger_mult"],
@@ -155,26 +151,20 @@ with st.sidebar:
         "Trail distance after breakeven (x ATR)", value=DEFAULT_SETTINGS["trail_dist_mult"],
         step=0.1, format="%.1f", key="trail_dist_mult"
     )
-    st.caption(
-        "SL tab tak fixed rehta hai jab tak profit 'breakeven trigger' na cross kare. Uske baad SL breakeven "
-        "pe jump karta hai, phir wider distance se trail karta hai â€” isse chhoti pullbacks pe premature exit nahi hota."
-    )
 
     st.subheader("Stock filter (liquidity/volatility)")
-    st.caption("% of price PER 5-MIN CANDLE, not daily range â€” typical values 0.1%-0.4%.")
     MIN_ATR_PCT = st.number_input(
         "Min 5-min ATR as % of price", value=DEFAULT_SETTINGS["min_atr_pct_input"],
         step=0.05, format="%.2f", key="min_atr_pct_input"
     ) / 100
 
-    st.subheader("Signal quality filters (fix low win-rate)")
+    st.subheader("Signal quality filters")
     ADX_FILTER_ENABLED = st.checkbox(
         "Require trending market (ADX filter)", value=DEFAULT_SETTINGS["adx_filter_enabled"], key="adx_filter_enabled"
     )
     ADX_THRESHOLD = st.number_input(
         "Min ADX (14-period)", value=DEFAULT_SETTINGS["adx_threshold"], step=1, key="adx_threshold"
     )
-    st.caption("Higher ADX = stronger trend. Below ~20 the market is usually choppy/sideways â€” signals here tend to fail.")
 
     VOLUME_FILTER_ENABLED = st.checkbox(
         "Require volume confirmation", value=DEFAULT_SETTINGS["volume_filter_enabled"], key="volume_filter_enabled"
@@ -192,19 +182,18 @@ with st.sidebar:
         "Min EMA-VWAP gap (x ATR)", value=DEFAULT_SETTINGS["signal_strength_frac"],
         step=0.05, format="%.2f", key="signal_strength_frac"
     )
-    st.caption("EMA and VWAP must be separated by at least this fraction of ATR â€” filters out weak/borderline crosses.")
 
     st.subheader("Overtrading control")
     ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox(
         "Max 1 trade per stock per day", value=DEFAULT_SETTINGS["one_trade_per_day"], key="one_trade_per_day"
     )
 
-    if st.button("Reset TODAY's live signals (keeps history file)"):
+    if st.button("Reset TODAY's live signals"):
         st.session_state.trade_log = {}
         st.session_state.processed_keys = set()
         st.session_state.traded_today = set()
 
-    if st.button("Delete ALL saved history (irreversible)"):
+    if st.button("Delete ALL saved history"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         st.session_state.trade_log = {}
@@ -220,16 +209,13 @@ if "processed_keys" not in st.session_state:
 if "traded_today" not in st.session_state:
     st.session_state.traded_today = set()
 
-
 def is_market_open(now_dt):
     return time(9, 15) <= now_dt.time() <= time(15, 30)
-
 
 def calculate_vwap(df):
     v = df["Volume"].values
     tp = (df["High"] + df["Low"] + df["Close"]) / 3
     return (tp * v).cumsum() / np.maximum(v.cumsum(), 1)
-
 
 def calculate_atr(df, period=14):
     high, low, close = df["High"], df["Low"], df["Close"]
@@ -240,7 +226,6 @@ def calculate_atr(df, period=14):
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.rolling(period, min_periods=period).mean()
-
 
 def calculate_adx(df, period=14):
     high, low, close = df["High"], df["Low"], df["Close"]
@@ -260,7 +245,6 @@ def calculate_adx(df, period=14):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     return dx.rolling(period, min_periods=period).mean()
 
-
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
     sell_turnover = exit_price * qty
@@ -274,7 +258,6 @@ def estimate_charges(entry_price, exit_price, qty):
     sebi_charges = total_turnover * 0.000001
 
     return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
-
 
 def passes_quality_filters(t_str, curr_ema, curr_vwap, curr_atr, curr_volume, avg_volume, curr_adx,
                             adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac):
@@ -290,9 +273,8 @@ def passes_quality_filters(t_str, curr_ema, curr_vwap, curr_atr, curr_volume, av
         return False
     return True
 
-
 # -----------------------------------------------------------------------------
-# SHARED TRADE SIMULATION
+# SHARED TRADE SIMULATION (REVERSE LOGIC SUPPORTED)
 # -----------------------------------------------------------------------------
 def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
                     atr_at_entry, sl_atr_mult, target_atr_mult, trailing_enabled,
@@ -300,7 +282,7 @@ def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
     sl = round(entry - atr_at_entry * sl_atr_mult, 2) if is_long else round(entry + atr_at_entry * sl_atr_mult, 2)
     target = round(entry + atr_at_entry * target_atr_mult, 2) if is_long else round(entry - atr_at_entry * target_atr_mult, 2)
     peak = entry
-    stage = "initial"  # "initial" (fixed SL) -> "trailing" (breakeven reached, wider trail active)
+    stage = "initial"
 
     status, exit_price, exit_idx = "LIVE", None, len(highs) - 1
 
@@ -353,7 +335,6 @@ def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
 
     return status, exit_price, exit_idx, sl, target
 
-
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_all_data():
     try:
@@ -374,14 +355,11 @@ def fetch_all_data():
             continue
     return result
 
-
 def count_live_trades():
     return sum(1 for t in st.session_state.trade_log.values() if t["Status"] == "LIVE")
 
-
 def badge(text, cls):
     return f'<span class="badge {cls}">{text}</span>'
-
 
 STATUS_BADGE = {
     "LIVE": ("LIVE", "badge-live"),
@@ -390,7 +368,6 @@ STATUS_BADGE = {
     "TRAIL": ("TRAIL LOCKED", "badge-trail"),
     "SQOFF": ("AUTO SQ-OFF", "badge-sqoff"),
 }
-
 
 def scan_and_update():
     all_data = fetch_all_data()
@@ -449,7 +426,7 @@ def scan_and_update():
                 else:
                     trade["Tax"], trade["Net P&L"] = None, None
 
-            # --- Detect NEW signals ---
+            # --- Detect NEW signals & REVERSE them ---
             for i in range(20, len(df)):
                 t_str = timestamps[i].strftime("%H:%M")
                 if t_str >= "15:15":
@@ -488,7 +465,11 @@ def scan_and_update():
                 if count_live_trades() >= MAX_ACTIVE_TRADES:
                     continue
 
-                is_long = long_pullback
+                # --- REVERSE LOGIC APPLIED HERE ---
+                # Original long_pullback signal becomes a SELL trade (is_long = False)
+                # Original short_pullback signal becomes a BUY trade (is_long = True)
+                is_long = short_pullback  # Ulta kar diya
+
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(CAPITAL_PER_STOCK / entry))
                 sl_init = round(entry - curr_atr * SL_ATR_MULT, 2) if is_long else round(entry + curr_atr * SL_ATR_MULT, 2)
@@ -508,13 +489,12 @@ def scan_and_update():
         except Exception:
             continue
 
-
 @st.fragment(run_every=10)
 def render_dashboard():
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
     today_str = now_ist.strftime("%Y-%m-%d")
     market_active = is_market_open(now_ist)
-    status_text = "SCANNING LIVE MARKET" if market_active else "MARKET CLOSED"
+    status_text = "SCANNING LIVE MARKET (REVERSE MODE)" if market_active else "MARKET CLOSED"
 
     if market_active:
         scan_and_update()
@@ -548,17 +528,17 @@ def render_dashboard():
     st.markdown(f"""
         <div class="pnl-card">
             <b>Capital:</b> {RUPEE}{int(TOTAL_CAPITAL):,} | <b>Active LIVE:</b> {live_count}/{MAX_ACTIVE_TRADES}<br><br>
-            <b>TODAY</b> &mdash; Trades: {len(today_df)} | Profitable exits (Target+Trail): {today_targets} | SL: {today_sl}<br>
+            <b>TODAY (Reverse Signals)</b> &mdash; Trades: {len(today_df)} | Profitable: {today_targets} | SL: {today_sl}<br>
             Gross: <span style="color:{net_color_today};">{RUPEE}{today_gross}</span> |
             Charges: <span style="color:#FF9800;">{RUPEE}{today_charges}</span> |
             Net: <span style="color:{net_color_today}; font-weight:bold;">{RUPEE}{today_net}</span><br><br>
-            <b>ALL-TIME (saved history)</b> &mdash; Trades: {alltime_trades} | Profitable exits: {alltime_targets} | SL: {alltime_sl} |
+            <b>ALL-TIME (saved history)</b> &mdash; Trades: {alltime_trades} | Profitable: {alltime_targets} | SL: {alltime_sl} |
             Net: <span style="color:{net_color_all}; font-weight:bold;">{RUPEE}{alltime_net}</span>
         </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### Live Intraday Trade Terminal (today, in-progress + closed)")
+    st.markdown("### Live Reverse Trade Terminal (BUY -> SELL, SELL -> BUY)")
 
     if live_trades_list:
         rows = []
@@ -575,19 +555,18 @@ def render_dashboard():
         display_df = pd.DataFrame(rows)
         st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
     else:
-        st.info("Market open hone par live signals scan ho kar auto-appear honge.")
+        st.info("Market open hone par reverse signals scan hokar yahan dikhenge.")
 
     with st.expander("Full saved trade history (all days)"):
         if not history_df.empty:
             st.dataframe(history_df.iloc[::-1], use_container_width=True)
             st.download_button("Download full history CSV", data=history_df.to_csv(index=False),
-                                file_name="trade_history.csv", mime="text/csv")
+                                file_name="trade_history_reverse.csv", mime="text/csv")
         else:
             st.caption("Abhi koi closed trade save nahi hui hai.")
 
-
 # -----------------------------------------------------------------------------
-# BACKTEST: last 60 days, same quality filters + trailing logic as live.
+# BACKTEST (REVERSE MODE)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailing_enabled,
@@ -668,7 +647,9 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
                     i += 1
                     continue
 
-                is_long = long_pullback
+                # --- REVERSE LOGIC APPLIED IN BACKTEST ---
+                is_long = short_pullback
+
                 entry = round(float(curr_close), 2)
                 qty = max(1, int(capital_per_stock / entry))
 
@@ -696,13 +677,11 @@ def run_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailin
 
     return pd.DataFrame(all_trades)
 
-
 def render_backtest_tab():
-    st.markdown("### Backtest (last 60 days)")
-    st.caption("ATR-based SL/Target + trailing + signal-quality filters, exactly as set in the sidebar.")
-
-    if st.button("Run Backtest"):
-        with st.spinner("Backtest chal raha hai, thoda time lagega..."):
+    st.markdown("### Backtest (Reverse Mode - Last 60 Days)")
+    
+    if st.button("Run Reverse Backtest"):
+        with st.spinner("Backtest chal raha hai..."):
             bt_df = run_backtest(
                 SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT, ONE_TRADE_PER_STOCK_PER_DAY, TRAILING_ENABLED,
                 BREAKEVEN_TRIGGER_MULT, TRAIL_DIST_MULT,
@@ -712,13 +691,8 @@ def render_backtest_tab():
         st.session_state.backtest_result = bt_df
 
     bt_df = st.session_state.get("backtest_result")
-
-    if bt_df is None:
+    if bt_df is None or bt_df.empty:
         st.info("Button dabao backtest chalane ke liye.")
-        return
-
-    if bt_df.empty:
-        st.warning("Koi trade nahi mila is period me in settings ke saath â€” filters shayad zyada strict hain.")
         return
 
     total_trades = len(bt_df)
@@ -726,59 +700,21 @@ def render_backtest_tab():
     trails = len(bt_df[bt_df["Status"] == "TRAIL"])
     profitable = targets + trails
     sl_hits = len(bt_df[bt_df["Status"] == "SL"])
-    sqoff = len(bt_df[bt_df["Status"] == "SQOFF"])
     win_rate = round((profitable / total_trades) * 100, 1) if total_trades else 0.0
-    total_gross = round(bt_df["GrossPnL"].sum(), 2)
-    total_charges = round(bt_df["Charges"].sum(), 2)
     total_net = round(bt_df["NetPnL"].sum(), 2)
-    avg_net_per_trade = round(total_net / total_trades, 2) if total_trades else 0.0
 
     net_color = "#4CAF50" if total_net >= 0 else "#FF5252"
-
     st.markdown(f"""
         <div class="pnl-card">
-            <b>Total Trades:</b> {total_trades} | <b>Profitable (Target+Trail):</b> {profitable} ({win_rate}%)
-            &nbsp;[Target: {targets}, Trail-locked: {trails}] |
-            <b>SL Hit:</b> {sl_hits} | <b>Auto Sq-off:</b> {sqoff}<br><br>
-            <b>Gross P&L:</b> {RUPEE}{total_gross} |
-            <b>Total Charges:</b> {RUPEE}{total_charges} |
-            <b>Net P&L:</b> <span style="color:{net_color}; font-weight:bold;">{RUPEE}{total_net}</span><br>
-            <b>Avg Net P&L / trade:</b> {RUPEE}{avg_net_per_trade}
+            <b>Total Reverse Trades:</b> {total_trades} | <b>Win Rate:</b> {win_rate}%<br>
+            <b>Net P&L:</b> <span style="color:{net_color}; font-weight:bold;">{RUPEE}{total_net}</span>
         </div>
     """, unsafe_allow_html=True)
+    st.dataframe(bt_df, use_container_width=True)
 
-    daily = bt_df.groupby("Date")["NetPnL"].sum().reset_index()
-    daily["CumulativeNetPnL"] = daily["NetPnL"].cumsum()
-
-    st.markdown("#### Day-wise P&L")
-    st.dataframe(daily, use_container_width=True)
-
-    st.markdown("#### Equity Curve (cumulative Net P&L)")
-    st.line_chart(daily.set_index("Date")["CumulativeNetPnL"])
-
-    st.markdown("#### Per-stock performance")
-    per_stock = bt_df.groupby("Symbol").agg(
-        Trades=("NetPnL", "count"),
-        Profitable=("Status", lambda s: s.isin(["TARGET", "TRAIL"]).sum()),
-        SLHits=("Status", lambda s: (s == "SL").sum()),
-        NetPnL=("NetPnL", "sum"),
-    ).reset_index().sort_values("NetPnL", ascending=False)
-    st.dataframe(per_stock, use_container_width=True)
-
-    with st.expander("All backtest trades"):
-        st.dataframe(bt_df.iloc[::-1], use_container_width=True)
-        st.download_button("Download backtest CSV", data=bt_df.to_csv(index=False),
-                            file_name="backtest_60days.csv", mime="text/csv")
-
-
-# -----------------------------------------------------------------------------
-# MAIN LAYOUT
-# -----------------------------------------------------------------------------
-st.markdown("### INTRADAY SCANNER (Quality-filtered, ATR + Trailing SL)")
-tab_live, tab_backtest = st.tabs(["Live Dashboard", "Backtest"])
-
-with tab_live:
+# Main Execution Routing
+tab1, tab2 = st.tabs(["Live Dashboard", "Backtest"])
+with tab1:
     render_dashboard()
-
-with tab_backtest:
+with tab2:
     render_backtest_tab()
