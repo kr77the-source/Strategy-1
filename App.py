@@ -43,7 +43,7 @@ HISTORY_COLUMNS = [
 ]
 
 # -----------------------------------------------------------------------------
-# PERSISTENT STORAGE ENGINE (REFRESH PROOF)
+# PERSISTENT STORAGE ENGINE
 # -----------------------------------------------------------------------------
 def load_db():
     if os.path.exists(HISTORY_FILE):
@@ -156,7 +156,7 @@ if "processed_keys" not in st.session_state:
     st.session_state.processed_keys = set()
 
 # -----------------------------------------------------------------------------
-# REAL-TIME SIGNAL & LIVE PRICE ENGINE
+# REAL-TIME SIGNAL ENGINE
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_market_data(stocks_list, tf_mins):
@@ -202,10 +202,8 @@ def process_signals():
             norm_signal = (fast_prev <= slow_prev) and (fast_curr > slow_curr)
             rev_signal = (fast_prev >= slow_prev) and (fast_curr < slow_curr)
 
-            # Check existing open trades from DB
             open_trades = db_df[(db_df["Symbol"] == symbol.replace(".NS", "")) & (db_df["Status"] == "LIVE")]
 
-            # 1. NEW TRADE ENTRY
             if candle_key not in st.session_state.processed_keys:
                 st.session_state.processed_keys.add(candle_key)
 
@@ -235,7 +233,6 @@ def process_signals():
                     }
                     upsert_trade_to_db(trade_obj)
 
-            # 2. CONTINUOUS LIVE TRACKING & EXIT CHECK
             db_df = load_db()
             active_rows = db_df[(db_df["Symbol"] == symbol.replace(".NS", "")) & (db_df["Status"] == "LIVE")]
             
@@ -274,7 +271,7 @@ def process_signals():
             continue
 
 # -----------------------------------------------------------------------------
-# DUAL BACKTEST ENGINE (60 DAYS)
+# DUAL BACKTEST ENGINE (RESTORED ORIGINAL SETTINGS WITH LEVERAGE)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, trade_val, leverage, tf_mins):
@@ -302,77 +299,61 @@ def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, tr
             fast_ema, slow_ema, atr = df["FastEMA"].values, df["SlowEMA"].values, df["ATR"].values
             timestamps = df.index
 
-            i = slow_len
-            while i < len(df) - 1:
+            for i in range(slow_len, len(df)):
                 fast_curr, slow_curr = fast_ema[i], slow_ema[i]
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 entry_p, curr_atr = closes[i], atr[i]
+                t_entry = timestamps[i].strftime("%H:%M")
+                date_str = timestamps[i].strftime("%Y-%m-%d")
 
+                # Normal Strategy
                 if fast_prev <= slow_prev and fast_curr > slow_curr:
                     qty = max(1, int(buying_power / entry_p))
                     sl_p = entry_p - (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 0.95
                     
-                    exit_p = closes[-1]
-                    t_exit = timestamps[-1].strftime("%H:%M")
-                    exit_idx = len(df) - 1
+                    exit_idx = min(i + 5, len(df) - 1)
+                    exit_p = closes[exit_idx]
+                    t_exit = timestamps[exit_idx].strftime("%H:%M")
 
-                    for j in range(i + 1, len(df)):
+                    # ATR Stop Loss check
+                    for j in range(i + 1, exit_idx + 1):
                         if lows[j] <= sl_p:
                             exit_p = sl_p
                             t_exit = timestamps[j].strftime("%H:%M")
-                            exit_idx = j
-                            break
-                        elif fast_ema[j] < slow_ema[j]:
-                            exit_p = closes[j]
-                            t_exit = timestamps[j].strftime("%H:%M")
-                            exit_idx = j
                             break
 
                     gross = round((exit_p - entry_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
                     norm_list.append({
-                        "Date": timestamps[i].strftime("%Y-%m-%d"), 
-                        "EntryTime": timestamps[i].strftime("%H:%M"), "ExitTime": t_exit,
+                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
                         "Symbol": symbol.replace(".NS",""), "Type": "BUY", "Qty": qty, 
                         "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
                         "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
                     })
-                    i = exit_idx + 1
-                    continue
 
+                # Reversal Strategy
                 if fast_prev >= slow_prev and fast_curr < slow_curr:
                     qty = max(1, int(buying_power / entry_p))
                     sl_p = entry_p + (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 1.05
                     
-                    exit_p = closes[-1]
-                    t_exit = timestamps[-1].strftime("%H:%M")
-                    exit_idx = len(df) - 1
+                    exit_idx = min(i + 5, len(df) - 1)
+                    exit_p = closes[exit_idx]
+                    t_exit = timestamps[exit_idx].strftime("%H:%M")
 
-                    for j in range(i + 1, len(df)):
+                    for j in range(i + 1, exit_idx + 1):
                         if highs[j] >= sl_p:
                             exit_p = sl_p
                             t_exit = timestamps[j].strftime("%H:%M")
-                            exit_idx = j
-                            break
-                        elif fast_ema[j] > slow_ema[j]:
-                            exit_p = closes[j]
-                            t_exit = timestamps[j].strftime("%H:%M")
-                            exit_idx = j
                             break
 
                     gross = round((entry_p - exit_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
                     rev_list.append({
-                        "Date": timestamps[i].strftime("%Y-%m-%d"), 
-                        "EntryTime": timestamps[i].strftime("%H:%M"), "ExitTime": t_exit,
+                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
                         "Symbol": symbol.replace(".NS",""), "Type": "SELL", "Qty": qty, 
                         "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
                         "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
                     })
-                    i = exit_idx + 1
-                    continue
-
-                i += 1
 
         except Exception:
             continue
@@ -447,7 +428,7 @@ def render_live_strategy_tab(strategy_mode, title):
     else:
         st.caption("Abhi koi open position nahi hai.")
 
-    st.markdown("#### 🗄️ Closed Trades History (What Happened to Trades)")
+    st.markdown("#### 🗄️ Closed Trades History")
     if not closed_df.empty:
         closed_df["Sr"] = range(1, len(closed_df) + 1)
         st.dataframe(closed_df[col_order], use_container_width=True, hide_index=True)
