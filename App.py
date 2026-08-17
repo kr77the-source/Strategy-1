@@ -325,7 +325,6 @@ def render_top_pnl_summary(trades_dict, title):
     net_class = "metric-val-green" if tot_net >= 0 else "metric-val-red"
     gross_class = "metric-val-green" if tot_gross >= 0 else "metric-val-red"
 
-    # SUMMARY BOX AT THE VERY TOP
     st.markdown(f"""
         <div class="top-pnl-card">
             <div style="display: flex; justify-content: space-around; text-align: center;">
@@ -349,7 +348,6 @@ def render_top_pnl_summary(trades_dict, title):
         </div>
     """, unsafe_allow_html=True)
 
-    # TABLE DISPLAYED BELOW SUMMARY
     if not trades:
         st.info("Koi active live trade nahi mila.")
         return
@@ -362,7 +360,7 @@ def render_top_pnl_summary(trades_dict, title):
         "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status", 
         "GrossPnL", "Charges", "NetPnL"
     ]
-    st.dataframe(df[col_order], use_container_width=True)
+    st.dataframe(df[col_order], use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
 # APP TABS ROUTING
@@ -412,7 +410,11 @@ with tab3:
             net_pnl = round(df["NetPnL"].sum(), 2)
             net_class = "metric-val-green" if net_pnl >= 0 else "metric-val-red"
 
-            # BACKTEST SUMMARY CARD ON TOP
+            bt_col_order = [
+                "Sr", "Date", "EntryTime", "ExitTime", "Symbol", "Type", 
+                "Qty", "EntryPrice", "ExitPrice", "GrossPnL", "Charges", "NetPnL"
+            ]
+
             st.markdown(f"#### {name}")
             st.markdown(f"""
                 <div class="top-pnl-card">
@@ -421,7 +423,7 @@ with tab3:
                     <b>Net P&L:</b> <span class="{net_class}">{RUPEE}{net_pnl}</span>
                 </div>
             """, unsafe_allow_html=True)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df[bt_col_order], use_container_width=True, hide_index=True)
 
         with c1:
             render_bt_summary(norm_bt, "Normal Trend Strategy")
@@ -432,7 +434,7 @@ with tab3:
     st.markdown("### 🗄️ Closed Trades Database History")
     db_df = load_db()
     if not db_df.empty:
-        st.dataframe(db_df, use_container_width=True)
+        st.dataframe(db_df, use_container_width=True, hide_index=True)
     else:
         st.info("Abhi tak koi closed trade database mein save nahi hua hai.")
 
