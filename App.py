@@ -14,17 +14,18 @@ st.set_page_config(page_title="EMA Live Terminal & Backtest", layout="wide")
 
 st.markdown("""
     <style>
-    .block-container { padding-top: 3rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+    .block-container { padding-top: 2.5rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     header[data-testid="stHeader"] { background: transparent; }
-    .pnl-card {
-        background-color: #1e2530;
-        border: 1px solid #2e3846;
-        border-radius: 6px;
-        padding: 8px 12px;
+    .top-pnl-card {
+        background: linear-gradient(135deg, #1e2530 0%, #161b22 100%);
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 15px;
         color: #ffffff;
-        font-size: 13px;
-        margin-bottom: 8px;
     }
+    .metric-val-green { color: #4CAF50; font-weight: bold; font-size: 18px; }
+    .metric-val-red { color: #FF5252; font-weight: bold; font-size: 18px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -91,7 +92,7 @@ if "watchlist" not in st.session_state:
 with st.sidebar:
     st.header("🔍 Dynamic Share Selection")
     
-    new_stock = st.text_input("Add Custom NSE Ticker (e.g. ZOMATO, TATAPOWER):", "").strip().upper()
+    new_stock = st.text_input("Add Custom NSE Ticker (e.g. ZOMATO):", "").strip().upper()
     if st.button("➕ Add Share to Watchlist"):
         if new_stock:
             formatted_symbol = new_stock if new_stock.endswith(".NS") else f"{new_stock}.NS"
@@ -176,7 +177,6 @@ def process_signals():
             candle_key = f"{symbol}_{timestamps[i].isoformat()}"
             candle_time_str = timestamps[i].strftime("%H:%M")
 
-            # Entry Trigger Detection
             if candle_key not in st.session_state.processed_keys:
                 st.session_state.processed_keys.add(candle_key)
 
@@ -184,7 +184,6 @@ def process_signals():
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 close_p, curr_atr = closes[i], atr[i]
 
-                # Normal Strategy Entry
                 norm_signal = (fast_prev <= slow_prev and fast_curr > slow_curr) or (fast_curr > slow_curr)
                 if norm_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.normal_trades.values() if t["Status"] == "LIVE"]:
                     qty = max(1, int(TRADE_VALUE / close_p))
@@ -197,7 +196,6 @@ def process_signals():
                         "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Normal"
                     }
 
-                # Reversal Strategy Entry
                 rev_signal = (fast_prev >= slow_prev and fast_curr < slow_curr) or (fast_curr < slow_curr)
                 if rev_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.reversal_trades.values() if t["Status"] == "LIVE"]:
                     qty = max(1, int(TRADE_VALUE / close_p))
@@ -210,7 +208,6 @@ def process_signals():
                         "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Reversal"
                     }
 
-            # Continuous Live P&L Updates & Exit Checking
             for trade_dict in [st.session_state.normal_trades, st.session_state.reversal_trades]:
                 for k, t in list(trade_dict.items()):
                     if t["SymbolRaw"] == symbol and t["Status"] == "LIVE":
@@ -218,14 +215,12 @@ def process_signals():
                         t["CurrentPrice"] = round(curr_close, 2)
                         is_long = t["Type"] == "BUY"
 
-                        # Live P&L Calculation
                         gross = (curr_close - t["EntryPrice"]) * t["Qty"] if is_long else (t["EntryPrice"] - curr_close) * t["Qty"]
                         chg = estimate_charges(t["EntryPrice"], curr_close, t["Qty"])
                         t["GrossPnL"] = round(gross, 2)
                         t["Charges"] = chg
                         t["NetPnL"] = round(gross - chg, 2)
 
-                        # Stop Loss Exit Trigger
                         hit_sl = (is_long and curr_close <= t["SL"]) or (not is_long and curr_close >= t["SL"])
                         if hit_sl:
                             t["Status"] = "SL HIT (CLOSED)"
@@ -317,21 +312,46 @@ def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, tr
     return df_norm, df_rev
 
 # -----------------------------------------------------------------------------
-# APP TABS ROUTING (ORDER UPDATED ACCORDING TO USER REQUEST)
+# SUMMARY CARDS & UI RENDERERS
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs([
-    "🟢 Tab 1: Live Normal Strategy",
-    "🔴 Tab 2: Live Reversal Strategy",
-    "📊 Tab 3: Backtest & History Database"
-])
-
-process_signals()
-
-def render_trade_table(trade_dict, title):
+def render_top_pnl_summary(trades_dict, title):
     st.markdown(f"### {title}")
-    trades = list(trade_dict.values())
+    trades = list(trades_dict.values())
+    
+    total_trades = len(trades)
+    tot_gross = sum([t["GrossPnL"] for t in trades])
+    tot_charges = sum([t["Charges"] for t in trades])
+    tot_net = round(tot_gross - tot_charges, 2)
+    net_class = "metric-val-green" if tot_net >= 0 else "metric-val-red"
+    gross_class = "metric-val-green" if tot_gross >= 0 else "metric-val-red"
+
+    # SUMMARY BOX AT THE VERY TOP
+    st.markdown(f"""
+        <div class="top-pnl-card">
+            <div style="display: flex; justify-content: space-around; text-align: center;">
+                <div>
+                    <span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br>
+                    <span style="font-size: 18px; font-weight: bold;">{total_trades}</span>
+                </div>
+                <div>
+                    <span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br>
+                    <span class="{gross_class}">{RUPEE}{tot_gross:.2f}</span>
+                </div>
+                <div>
+                    <span style="font-size: 12px; color: #8b949e;">TOTAL CHARGES</span><br>
+                    <span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_charges:.2f}</span>
+                </div>
+                <div>
+                    <span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br>
+                    <span class="{net_class}">{RUPEE}{tot_net:.2f}</span>
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # TABLE DISPLAYED BELOW SUMMARY
     if not trades:
-        st.info("Koi active signal nahi mila.")
+        st.info("Koi active live trade nahi mila.")
         return
     
     df = pd.DataFrame(trades)
@@ -342,16 +362,24 @@ def render_trade_table(trade_dict, title):
         "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status", 
         "GrossPnL", "Charges", "NetPnL"
     ]
-    df = df[col_order]
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df[col_order], use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# APP TABS ROUTING
+# -----------------------------------------------------------------------------
+tab1, tab2, tab3 = st.tabs([
+    "🟢 Tab 1: Live Normal Strategy",
+    "🔴 Tab 2: Live Reversal Strategy",
+    "📊 Tab 3: Backtest & History Database"
+])
+
+process_signals()
 
 with tab1:
-    st.markdown("#### 🟢 Live Normal Strategy Terminal (Trend Following)")
-    render_trade_table(st.session_state.normal_trades, "Live Normal Strategy Signals")
+    render_top_pnl_summary(st.session_state.normal_trades, "🟢 Live Normal Strategy (Top P&L Summary)")
 
 with tab2:
-    st.markdown("#### 🔴 Live Reversal Strategy Terminal (Contra)")
-    render_trade_table(st.session_state.reversal_trades, "Live Reversal Strategy Signals")
+    render_top_pnl_summary(st.session_state.reversal_trades, "🔴 Live Reversal Strategy (Top P&L Summary)")
 
 with tab3:
     st.markdown("### 📊 Dual Backtest Engine & Database Logs")
@@ -379,16 +407,18 @@ with tab3:
             tot = len(df)
             wins = len(df[df["NetPnL"] > 0])
             wr = round((wins / tot) * 100, 1)
-            net_pnl = round(df["NetPnL"].sum(), 2)
+            gross_pnl = round(df["GrossPnL"].sum(), 2)
             charges = round(df["Charges"].sum(), 2)
-            color = "#4CAF50" if net_pnl >= 0 else "#FF5252"
+            net_pnl = round(df["NetPnL"].sum(), 2)
+            net_class = "metric-val-green" if net_pnl >= 0 else "metric-val-red"
 
+            # BACKTEST SUMMARY CARD ON TOP
             st.markdown(f"#### {name}")
             st.markdown(f"""
-                <div class="pnl-card">
+                <div class="top-pnl-card">
                     <b>Total Trades:</b> {tot} | <b>Win Rate:</b> {wr}%<br>
-                    <b>Total Charges:</b> {RUPEE}{charges}<br>
-                    <b>Net P&L:</b> <span style="color:{color}; font-weight:bold;">{RUPEE}{net_pnl}</span>
+                    <b>Gross P&L:</b> {RUPEE}{gross_pnl} | <b>Total Charges:</b> <span style="color:#e3b341;">{RUPEE}{charges}</span><br>
+                    <b>Net P&L:</b> <span class="{net_class}">{RUPEE}{net_pnl}</span>
                 </div>
             """, unsafe_allow_html=True)
             st.dataframe(df, use_container_width=True)
@@ -406,7 +436,6 @@ with tab3:
     else:
         st.info("Abhi tak koi closed trade database mein save nahi hua hai.")
 
-# Continuous Auto-Refresh Loop for Live Updates
 if AUTO_REFRESH:
     time.sleep(15)
     st.rerun()
