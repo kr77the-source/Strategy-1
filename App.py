@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -9,11 +10,11 @@ from zoneinfo import ZoneInfo
 # -----------------------------------------------------------------------------
 # PAGE CONFIG & STYLES
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="EMA Backtest & Live Terminal", layout="wide")
+st.set_page_config(page_title="EMA Live Terminal & Backtest", layout="wide")
 
 st.markdown("""
     <style>
-    .block-container { padding-top: 3.5rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+    .block-container { padding-top: 3rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     header[data-testid="stHeader"] { background: transparent; }
     .pnl-card {
         background-color: #1e2530;
@@ -36,8 +37,8 @@ DEFAULT_STOCKS = [
 
 HISTORY_FILE = "strategy_history_db.csv"
 HISTORY_COLUMNS = [
-    "Date", "Time", "Symbol", "StrategyMode", "Type", "Qty", "Entry", "SL",
-    "Exit", "Status", "GrossPnL", "Charges", "NetPnL"
+    "Sr", "Date", "EntryTime", "ExitTime", "Symbol", "StrategyMode", "Type", 
+    "Qty", "EntryPrice", "ExitPrice", "SL", "Status", "GrossPnL", "Charges", "NetPnL"
 ]
 
 # -----------------------------------------------------------------------------
@@ -82,7 +83,7 @@ def estimate_charges(entry_price, exit_price, qty):
     return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
 # -----------------------------------------------------------------------------
-# SIDEBAR: DYNAMIC CUSTOM SHARE ADDITION & PARAMETERS
+# SIDEBAR CONTROL
 # -----------------------------------------------------------------------------
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = DEFAULT_STOCKS.copy()
@@ -90,7 +91,6 @@ if "watchlist" not in st.session_state:
 with st.sidebar:
     st.header("🔍 Dynamic Share Selection")
     
-    # Custom Stock Input Section
     new_stock = st.text_input("Add Custom NSE Ticker (e.g. ZOMATO, TATAPOWER):", "").strip().upper()
     if st.button("➕ Add Share to Watchlist"):
         if new_stock:
@@ -101,7 +101,7 @@ with st.sidebar:
                 st.rerun()
 
     SELECTED_STOCKS = st.multiselect(
-        "Active Live/Backtest Watchlist (Max 10):",
+        "Active Watchlist (Max 10):",
         options=st.session_state.watchlist,
         default=st.session_state.watchlist[:5],
         max_selections=10
@@ -118,12 +118,11 @@ with st.sidebar:
     st.subheader("💰 Execution Settings")
     TRADE_VALUE = st.number_input("Trade Value per Stock (Rs)", value=3000, step=500)
     TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", [5, 15, 30, 60], index=1)
-
+    
     st.markdown("---")
-    st.header("🚀 Execution Mode")
-    TRADING_MODE = st.radio("Select Mode:", ["Paper Trading / Backtest", "Live Signal Trigger"])
+    AUTO_REFRESH = st.checkbox("🔄 Auto-Refresh Live P&L (15 sec)", value=True)
 
-    if st.button("Clear Logs & Session"):
+    if st.button("Clear Session & Logs"):
         st.session_state.normal_trades = {}
         st.session_state.reversal_trades = {}
         st.session_state.processed_keys = set()
@@ -141,9 +140,9 @@ if "processed_keys" not in st.session_state:
     st.session_state.processed_keys = set()
 
 # -----------------------------------------------------------------------------
-# DATA ENGINE & PROCESSOR
+# REAL-TIME SIGNAL & LIVE PRICE ENGINE
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_market_data(stocks_list, tf_mins):
     tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
     try:
@@ -154,7 +153,9 @@ def fetch_market_data(stocks_list, tf_mins):
 
 def process_signals():
     data = fetch_market_data(SELECTED_STOCKS, TIMEFRAME_MINS)
-    today_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+    now_dt = datetime.now(ZoneInfo("Asia/Kolkata"))
+    today_str = now_dt.strftime("%Y-%m-%d")
+    current_time_str = now_dt.strftime("%H:%M:%S")
 
     for symbol in SELECTED_STOCKS:
         try:
@@ -173,8 +174,9 @@ def process_signals():
 
             i = len(df) - 1
             candle_key = f"{symbol}_{timestamps[i].isoformat()}"
-            t_str = timestamps[i].strftime("%H:%M")
+            candle_time_str = timestamps[i].strftime("%H:%M")
 
+            # Entry Trigger Detection
             if candle_key not in st.session_state.processed_keys:
                 st.session_state.processed_keys.add(candle_key)
 
@@ -182,47 +184,60 @@ def process_signals():
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 close_p, curr_atr = closes[i], atr[i]
 
+                # Normal Strategy Entry
                 norm_signal = (fast_prev <= slow_prev and fast_curr > slow_curr) or (fast_curr > slow_curr)
                 if norm_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.normal_trades.values() if t["Status"] == "LIVE"]:
                     qty = max(1, int(TRADE_VALUE / close_p))
                     sl_p = close_p - (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 0.95
                     st.session_state.normal_trades[f"NORM_{candle_key}"] = {
-                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), "Time": t_str,
-                        "Type": "BUY", "Qty": qty, "Entry": round(close_p, 2), "SL": round(sl_p, 2),
-                        "Status": "LIVE", "Exit": round(close_p, 2), "GrossPnL": 0.0, "NetPnL": 0.0, "Mode": "Normal"
+                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), 
+                        "EntryTime": candle_time_str, "ExitTime": "-",
+                        "Type": "BUY", "Qty": qty, "EntryPrice": round(close_p, 2), 
+                        "CurrentPrice": round(close_p, 2), "ExitPrice": "-", "SL": round(sl_p, 2),
+                        "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Normal"
                     }
 
+                # Reversal Strategy Entry
                 rev_signal = (fast_prev >= slow_prev and fast_curr < slow_curr) or (fast_curr < slow_curr)
                 if rev_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.reversal_trades.values() if t["Status"] == "LIVE"]:
                     qty = max(1, int(TRADE_VALUE / close_p))
                     sl_p = close_p + (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 1.05
                     st.session_state.reversal_trades[f"REV_{candle_key}"] = {
-                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), "Time": t_str,
-                        "Type": "SELL", "Qty": qty, "Entry": round(close_p, 2), "SL": round(sl_p, 2),
-                        "Status": "LIVE", "Exit": round(close_p, 2), "GrossPnL": 0.0, "NetPnL": 0.0, "Mode": "Reversal"
+                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), 
+                        "EntryTime": candle_time_str, "ExitTime": "-",
+                        "Type": "SELL", "Qty": qty, "EntryPrice": round(close_p, 2), 
+                        "CurrentPrice": round(close_p, 2), "ExitPrice": "-", "SL": round(sl_p, 2),
+                        "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Reversal"
                     }
 
+            # Continuous Live P&L Updates & Exit Checking
             for trade_dict in [st.session_state.normal_trades, st.session_state.reversal_trades]:
                 for k, t in list(trade_dict.items()):
                     if t["SymbolRaw"] == symbol and t["Status"] == "LIVE":
                         curr_close = closes[-1]
-                        t["Exit"] = round(curr_close, 2)
+                        t["CurrentPrice"] = round(curr_close, 2)
                         is_long = t["Type"] == "BUY"
 
-                        gross = (curr_close - t["Entry"]) * t["Qty"] if is_long else (t["Entry"] - curr_close) * t["Qty"]
+                        # Live P&L Calculation
+                        gross = (curr_close - t["EntryPrice"]) * t["Qty"] if is_long else (t["EntryPrice"] - curr_close) * t["Qty"]
+                        chg = estimate_charges(t["EntryPrice"], curr_close, t["Qty"])
                         t["GrossPnL"] = round(gross, 2)
+                        t["Charges"] = chg
+                        t["NetPnL"] = round(gross - chg, 2)
 
+                        # Stop Loss Exit Trigger
                         hit_sl = (is_long and curr_close <= t["SL"]) or (not is_long and curr_close >= t["SL"])
                         if hit_sl:
-                            t["Status"] = "SL HIT"
-                            chg = estimate_charges(t["Entry"], curr_close, t["Qty"])
-                            net = round(gross - chg, 2)
-                            t["NetPnL"] = net
+                            t["Status"] = "SL HIT (CLOSED)"
+                            t["ExitTime"] = current_time_str
+                            t["ExitPrice"] = round(curr_close, 2)
                             append_db({
-                                "Date": today_str, "Time": t["Time"], "Symbol": t["Symbol"],
-                                "StrategyMode": t["Mode"], "Type": t["Type"], "Qty": t["Qty"],
-                                "Entry": t["Entry"], "SL": t["SL"], "Exit": t["Exit"],
-                                "Status": "SL HIT", "GrossPnL": gross, "Charges": chg, "NetPnL": net
+                                "Sr": len(load_db()) + 1, "Date": today_str, 
+                                "EntryTime": t["EntryTime"], "ExitTime": t["ExitTime"], 
+                                "Symbol": t["Symbol"], "StrategyMode": t["Mode"], "Type": t["Type"], 
+                                "Qty": t["Qty"], "EntryPrice": t["EntryPrice"], "ExitPrice": t["ExitPrice"], 
+                                "SL": t["SL"], "Status": t["Status"], "GrossPnL": t["GrossPnL"], 
+                                "Charges": t["Charges"], "NetPnL": t["NetPnL"]
                             })
         except Exception:
             continue
@@ -259,49 +274,94 @@ def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, tr
                 fast_curr, slow_curr = fast_ema[i], slow_ema[i]
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 entry_p, curr_atr = closes[i], atr[i]
-                t_str = timestamps[i].strftime("%H:%M")
+                t_entry = timestamps[i].strftime("%H:%M")
+                exit_idx = min(i+5, len(df)-1)
+                t_exit = timestamps[exit_idx].strftime("%H:%M")
                 date_str = timestamps[i].strftime("%Y-%m-%d")
 
                 if fast_prev <= slow_prev and fast_curr > slow_curr:
                     qty = max(1, int(trade_val / entry_p))
-                    exit_p = closes[min(i+5, len(df)-1)]
+                    exit_p = closes[exit_idx]
                     gross = round((exit_p - entry_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
-                    norm_list.append({"Date": date_str, "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "BUY", "Qty": qty, "Entry": round(entry_p, 2), "Exit": round(exit_p, 2), "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)})
+                    norm_list.append({
+                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
+                        "Symbol": symbol.replace(".NS",""), "Type": "BUY", "Qty": qty, 
+                        "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
+                        "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
+                    })
 
                 if fast_prev >= slow_prev and fast_curr < slow_curr:
                     qty = max(1, int(trade_val / entry_p))
-                    exit_p = closes[min(i+5, len(df)-1)]
+                    exit_p = closes[exit_idx]
                     gross = round((entry_p - exit_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
-                    rev_list.append({"Date": date_str, "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "SELL", "Qty": qty, "Entry": round(entry_p, 2), "Exit": round(exit_p, 2), "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)})
+                    rev_list.append({
+                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
+                        "Symbol": symbol.replace(".NS",""), "Type": "SELL", "Qty": qty, 
+                        "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
+                        "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
+                    })
 
         except Exception:
             continue
 
-    return pd.DataFrame(norm_list), pd.DataFrame(rev_list)
+    df_norm = pd.DataFrame(norm_list)
+    df_rev = pd.DataFrame(rev_list)
+    
+    if not df_norm.empty:
+        df_norm.insert(0, "Sr", range(1, len(df_norm) + 1))
+    if not df_rev.empty:
+        df_rev.insert(0, "Sr", range(1, len(df_rev) + 1))
+
+    return df_norm, df_rev
 
 # -----------------------------------------------------------------------------
-# APP TABS & UI ROUTING
+# APP TABS ROUTING (ORDER UPDATED ACCORDING TO USER REQUEST)
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
-    "📊 Tab 1: 60-Day Backtest Analysis",
-    "🟢 Tab 2: Live / Paper Normal Signals",
-    "🔴 Tab 3: Live / Paper Reversal Signals"
+    "🟢 Tab 1: Live Normal Strategy",
+    "🔴 Tab 2: Live Reversal Strategy",
+    "📊 Tab 3: Backtest & History Database"
 ])
 
 process_signals()
 
+def render_trade_table(trade_dict, title):
+    st.markdown(f"### {title}")
+    trades = list(trade_dict.values())
+    if not trades:
+        st.info("Koi active signal nahi mila.")
+        return
+    
+    df = pd.DataFrame(trades)
+    df.insert(0, "Sr", range(1, len(df) + 1))
+    
+    col_order = [
+        "Sr", "EntryTime", "ExitTime", "Symbol", "Type", "Qty", 
+        "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status", 
+        "GrossPnL", "Charges", "NetPnL"
+    ]
+    df = df[col_order]
+    st.dataframe(df, use_container_width=True)
+
 with tab1:
-    st.markdown(f"### 📊 Backtest Engine ({len(SELECTED_STOCKS)} Active Shares Selected)")
-    st.info(f"Current Mode: **{TRADING_MODE}** | Selected Stocks: {', '.join([s.replace('.NS','') for s in SELECTED_STOCKS])}")
+    st.markdown("#### 🟢 Live Normal Strategy Terminal (Trend Following)")
+    render_trade_table(st.session_state.normal_trades, "Live Normal Strategy Signals")
+
+with tab2:
+    st.markdown("#### 🔴 Live Reversal Strategy Terminal (Contra)")
+    render_trade_table(st.session_state.reversal_trades, "Live Reversal Strategy Signals")
+
+with tab3:
+    st.markdown("### 📊 Dual Backtest Engine & Database Logs")
 
     col_btn, _ = st.columns([1, 4])
     with col_btn:
-        run_btn = st.button("▶️ Run 60-Day Dual Backtest", type="primary")
+        run_btn = st.button("▶️ Run 60-Day Backtest", type="primary")
 
     if run_btn:
-        with st.spinner("Selected stocks par 60-day historical data process ho raha hai..."):
+        with st.spinner("Selected stocks par 60-day historical data calculate ho raha hai..."):
             norm_bt, rev_bt = run_60d_dual_backtest(SELECTED_STOCKS, FAST_MA_LEN, SLOW_MA_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, TIMEFRAME_MINS)
             st.session_state.norm_bt = norm_bt
             st.session_state.rev_bt = rev_bt
@@ -338,19 +398,15 @@ with tab1:
         with c2:
             render_bt_summary(rev_bt, "Reversal Contra Strategy")
 
-def render_trade_table(trade_dict, title):
-    st.markdown(f"### {title}")
-    trades = list(trade_dict.values())
-    if not trades:
-        st.info("Koi active signal nahi mila.")
-        return
-    df = pd.DataFrame(trades)[["Time", "Symbol", "Type", "Qty", "Entry", "SL", "Exit", "Status", "GrossPnL", "NetPnL"]]
-    st.dataframe(df, use_container_width=True)
+    st.markdown("---")
+    st.markdown("### 🗄️ Closed Trades Database History")
+    db_df = load_db()
+    if not db_df.empty:
+        st.dataframe(db_df, use_container_width=True)
+    else:
+        st.info("Abhi tak koi closed trade database mein save nahi hua hai.")
 
-with tab2:
-    st.markdown("#### 🟢 Live Normal Strategy Terminal")
-    render_trade_table(st.session_state.normal_trades, "Live Normal Strategy Signals")
-
-with tab3:
-    st.markdown("#### 🔴 Live Reversal Strategy Terminal")
-    render_trade_table(st.session_state.reversal_trades, "Live Reversal Strategy Signals")
+# Continuous Auto-Refresh Loop for Live Updates
+if AUTO_REFRESH:
+    time.sleep(15)
+    st.rerun()
