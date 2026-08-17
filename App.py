@@ -116,8 +116,9 @@ with st.sidebar:
     ATR_LEN = st.number_input("ATR Length", value=14, step=1)
     ATR_MULT = st.number_input("ATR Multiplier", value=3.0, step=0.5)
 
-    st.subheader("💰 Execution Settings")
-    TRADE_VALUE = st.number_input("Trade Value per Stock (Rs)", value=3000, step=500)
+    st.subheader("💰 Execution & Margin Settings")
+    TRADE_VALUE = st.number_input("Trade Capital per Stock (Rs)", value=3000, step=500)
+    LEVERAGE = st.number_input("Intraday Leverage Multiplier (e.g. 5x)", value=5, min_value=1, max_value=20, step=1)
     TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", [5, 15, 30, 60], index=1)
     
     st.markdown("---")
@@ -158,6 +159,8 @@ def process_signals():
     today_str = now_dt.strftime("%Y-%m-%d")
     current_time_str = now_dt.strftime("%H:%M:%S")
 
+    effective_buying_power = TRADE_VALUE * LEVERAGE
+
     for symbol in SELECTED_STOCKS:
         try:
             df = data[symbol].dropna(how="all") if len(SELECTED_STOCKS) > 1 else data
@@ -184,9 +187,13 @@ def process_signals():
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 close_p, curr_atr = closes[i], atr[i]
 
-                norm_signal = (fast_prev <= slow_prev and fast_curr > slow_curr) or (fast_curr > slow_curr)
+                # STRICT CROSSOVER CONDITIONS
+                norm_signal = (fast_prev <= slow_prev) and (fast_curr > slow_curr)
+                rev_signal = (fast_prev >= slow_prev) and (fast_curr < slow_curr)
+
+                # 1. Normal Long Trade Entry
                 if norm_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.normal_trades.values() if t["Status"] == "LIVE"]:
-                    qty = max(1, int(TRADE_VALUE / close_p))
+                    qty = max(1, int(effective_buying_power / close_p))
                     sl_p = close_p - (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 0.95
                     st.session_state.normal_trades[f"NORM_{candle_key}"] = {
                         "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), 
@@ -196,9 +203,9 @@ def process_signals():
                         "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Normal"
                     }
 
-                rev_signal = (fast_prev >= slow_prev and fast_curr < slow_curr) or (fast_curr < slow_curr)
+                # 2. Reversal Short Trade Entry
                 if rev_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.reversal_trades.values() if t["Status"] == "LIVE"]:
-                    qty = max(1, int(TRADE_VALUE / close_p))
+                    qty = max(1, int(effective_buying_power / close_p))
                     sl_p = close_p + (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 1.05
                     st.session_state.reversal_trades[f"REV_{candle_key}"] = {
                         "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), 
@@ -208,6 +215,7 @@ def process_signals():
                         "Status": "LIVE", "GrossPnL": 0.0, "Charges": 0.0, "NetPnL": 0.0, "Mode": "Reversal"
                     }
 
+            # Live SL and P&L Monitor
             for trade_dict in [st.session_state.normal_trades, st.session_state.reversal_trades]:
                 for k, t in list(trade_dict.items()):
                     if t["SymbolRaw"] == symbol and t["Status"] == "LIVE":
@@ -238,10 +246,10 @@ def process_signals():
             continue
 
 # -----------------------------------------------------------------------------
-# DUAL BACKTEST ENGINE (60 DAYS)
+# ACCURATE DUAL BACKTEST ENGINE (60 DAYS WITH SL CHECKING)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, trade_val, tf_mins):
+def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, trade_val, leverage, tf_mins):
     tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
     try:
         data = yf.download(tickers=" ".join(stocks_list), period="60d", interval=tf_str, group_by="ticker", threads=True, progress=False)
@@ -249,6 +257,7 @@ def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, tr
         return pd.DataFrame(), pd.DataFrame()
 
     norm_list, rev_list = [], []
+    buying_power = trade_val * leverage
 
     for symbol in stocks_list:
         try:
@@ -261,42 +270,84 @@ def run_60d_dual_backtest(stocks_list, fast_len, slow_len, atr_mult, use_atr, tr
             df["SlowEMA"] = calculate_ema(df["Close"], slow_len)
             df["ATR"] = calculate_atr(df, 14)
 
-            closes = df["Close"].values
+            closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
             fast_ema, slow_ema, atr = df["FastEMA"].values, df["SlowEMA"].values, df["ATR"].values
             timestamps = df.index
 
-            for i in range(slow_len, len(df)):
+            i = slow_len
+            while i < len(df) - 1:
                 fast_curr, slow_curr = fast_ema[i], slow_ema[i]
                 fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
                 entry_p, curr_atr = closes[i], atr[i]
-                t_entry = timestamps[i].strftime("%H:%M")
-                exit_idx = min(i+5, len(df)-1)
-                t_exit = timestamps[exit_idx].strftime("%H:%M")
-                date_str = timestamps[i].strftime("%Y-%m-%d")
 
+                # 1. Long Normal Strategy Backtest
                 if fast_prev <= slow_prev and fast_curr > slow_curr:
-                    qty = max(1, int(trade_val / entry_p))
-                    exit_p = closes[exit_idx]
+                    qty = max(1, int(buying_power / entry_p))
+                    sl_p = entry_p - (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 0.95
+                    
+                    exit_p = closes[-1]
+                    t_exit = timestamps[-1].strftime("%H:%M")
+                    exit_idx = len(df) - 1
+
+                    # Look forward to find exact SL hit or reverse crossover
+                    for j in range(i + 1, len(df)):
+                        if lows[j] <= sl_p:
+                            exit_p = sl_p
+                            t_exit = timestamps[j].strftime("%H:%M")
+                            exit_idx = j
+                            break
+                        elif fast_ema[j] < slow_ema[j]: # Opposite crossover exit
+                            exit_p = closes[j]
+                            t_exit = timestamps[j].strftime("%H:%M")
+                            exit_idx = j
+                            break
+
                     gross = round((exit_p - entry_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
                     norm_list.append({
-                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
+                        "Date": timestamps[i].strftime("%Y-%m-%d"), 
+                        "EntryTime": timestamps[i].strftime("%H:%M"), "ExitTime": t_exit,
                         "Symbol": symbol.replace(".NS",""), "Type": "BUY", "Qty": qty, 
                         "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
                         "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
                     })
+                    i = exit_idx + 1
+                    continue
 
+                # 2. Short Reversal Strategy Backtest
                 if fast_prev >= slow_prev and fast_curr < slow_curr:
-                    qty = max(1, int(trade_val / entry_p))
-                    exit_p = closes[exit_idx]
+                    qty = max(1, int(buying_power / entry_p))
+                    sl_p = entry_p + (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 1.05
+                    
+                    exit_p = closes[-1]
+                    t_exit = timestamps[-1].strftime("%H:%M")
+                    exit_idx = len(df) - 1
+
+                    for j in range(i + 1, len(df)):
+                        if highs[j] >= sl_p:
+                            exit_p = sl_p
+                            t_exit = timestamps[j].strftime("%H:%M")
+                            exit_idx = j
+                            break
+                        elif fast_ema[j] > slow_ema[j]:
+                            exit_p = closes[j]
+                            t_exit = timestamps[j].strftime("%H:%M")
+                            exit_idx = j
+                            break
+
                     gross = round((entry_p - exit_p) * qty, 2)
                     chg = estimate_charges(entry_p, exit_p, qty)
                     rev_list.append({
-                        "Date": date_str, "EntryTime": t_entry, "ExitTime": t_exit,
+                        "Date": timestamps[i].strftime("%Y-%m-%d"), 
+                        "EntryTime": timestamps[i].strftime("%H:%M"), "ExitTime": t_exit,
                         "Symbol": symbol.replace(".NS",""), "Type": "SELL", "Qty": qty, 
                         "EntryPrice": round(entry_p, 2), "ExitPrice": round(exit_p, 2), 
                         "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)
                     })
+                    i = exit_idx + 1
+                    continue
+
+                i += 1
 
         except Exception:
             continue
@@ -388,7 +439,10 @@ with tab3:
 
     if run_btn:
         with st.spinner("Selected stocks par 60-day historical data calculate ho raha hai..."):
-            norm_bt, rev_bt = run_60d_dual_backtest(SELECTED_STOCKS, FAST_MA_LEN, SLOW_MA_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, TIMEFRAME_MINS)
+            norm_bt, rev_bt = run_60d_dual_backtest(
+                SELECTED_STOCKS, FAST_MA_LEN, SLOW_MA_LEN, 
+                ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, TIMEFRAME_MINS
+            )
             st.session_state.norm_bt = norm_bt
             st.session_state.rev_bt = rev_bt
 
