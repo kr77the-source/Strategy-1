@@ -7,38 +7,26 @@ import yfinance as yf
 from zoneinfo import ZoneInfo
 
 # -----------------------------------------------------------------------------
-# PAGE CONFIG
+# PAGE CONFIG & STYLES
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Intraday Scanner (Normal vs Reverse Dual Mode)", layout="wide")
+st.set_page_config(page_title="EMA Trend & Reversal Dual Terminal", layout="wide")
 
 st.markdown("""
     <style>
-    .block-container {
-        padding-top: 3.5rem !important;
-        padding-bottom: 0rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-    }
+    .block-container { padding-top: 3.5rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     header[data-testid="stHeader"] { background: transparent; }
-    h3 {
-        font-size: 1.1rem !important;
-        margin-top: 0rem !important;
-        margin-bottom: 0.5rem !important;
-        padding: 0px !important;
-    }
     .status-card, .pnl-card {
         background-color: #1e2530;
         border: 1px solid #2e3846;
         border-radius: 6px;
-        padding: 6px 10px;
+        padding: 8px 12px;
         color: #ffffff;
-        font-size: 12px;
-        margin-bottom: 5px;
+        font-size: 13px;
+        margin-bottom: 8px;
     }
-    hr { margin-top: 0.3rem !important; margin-bottom: 0.3rem !important; }
     .badge {
         display: inline-block;
-        padding: 1px 8px;
+        padding: 2px 8px;
         border-radius: 4px;
         font-weight: bold;
         font-size: 11px;
@@ -46,7 +34,6 @@ st.markdown("""
     .badge-live   { background-color: #FFC10730; color: #FFC107; }
     .badge-target { background-color: #4CAF5030; color: #4CAF50; }
     .badge-sl     { background-color: #FF525230; color: #FF5252; }
-    .badge-trail  { background-color: #29B6F630; color: #29B6F6; }
     .badge-sqoff  { background-color: #90A4AE30; color: #CFD8DC; }
     .badge-buy    { background-color: #4CAF5030; color: #4CAF50; }
     .badge-sell   { background-color: #FF525230; color: #FF5252; }
@@ -55,34 +42,22 @@ st.markdown("""
 
 RUPEE = "&#8377;"
 
-# -----------------------------------------------------------------------------
-# WATCHLIST
-# -----------------------------------------------------------------------------
-UNDER_300_WATCHLIST = [
-    "PNB.NS", "BANKBARODA.NS", "CANBK.NS", "UNIONBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "BANDHANBNK.NS",
-    "POWERGRID.NS", "NHPC.NS", "SJVN.NS", "NLCINDIA.NS", "CESC.NS",
-    "ONGC.NS", "IOC.NS", "GAIL.NS", "PETRONET.NS", "OIL.NS",
-    "TATASTEEL.NS", "SAIL.NS", "NMDC.NS", "VEDL.NS", "NATIONALUM.NS",
-    "RVNL.NS", "IRFC.NS", "IRCON.NS", "NBCC.NS", "HUDCO.NS",
-    "MOTHERSON.NS", "CASTROLIND.NS", "EXIDEIND.NS",
-    "WIPRO.NS", "HFCL.NS", "FSL.NS", "ITI.NS",
-    "BIOCON.NS", "GLENMARK.NS",
-    "BEL.NS", "BHEL.NS",
-    "MANAPPURAM.NS", "REDINGTON.NS", "IDFC.NS",
-    "TRIDENT.NS",
-    "GSFC.NS", "GNFC.NS", "FACT.NS", "RCF.NS", "NFL.NS"
+# Default stocks list from provided script
+DEFAULT_STOCKS = [
+    "BHARTIARTL.NS", "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS",
+    "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "LT.NS", "TATAMOTORS.NS"
 ]
 
-# -----------------------------------------------------------------------------
-# PERSISTENT STORAGE
-# -----------------------------------------------------------------------------
-HISTORY_FILE = "trade_history_dual.csv"
+HISTORY_FILE = "strategy_history_db.csv"
 HISTORY_COLUMNS = [
-    "Date", "Time", "Symbol", "Mode", "Type", "Qty", "Entry", "SL", "Target",
-    "Exit", "Status", "GrossPnL", "Charges", "NetPnL", "ATR"
+    "Date", "Time", "Symbol", "StrategyMode", "Type", "Qty", "Entry", "SL",
+    "Exit", "Status", "GrossPnL", "Charges", "NetPnL"
 ]
 
-def load_history():
+# -----------------------------------------------------------------------------
+# PERSISTENCE & HELPERS
+# -----------------------------------------------------------------------------
+def load_db():
     if os.path.exists(HISTORY_FILE):
         try:
             return pd.read_csv(HISTORY_FILE)
@@ -90,90 +65,13 @@ def load_history():
             return pd.DataFrame(columns=HISTORY_COLUMNS)
     return pd.DataFrame(columns=HISTORY_COLUMNS)
 
-def append_history(row: dict):
-    df = load_history()
+def append_db(row: dict):
+    df = load_db()
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     df.to_csv(HISTORY_FILE, index=False)
 
-# -----------------------------------------------------------------------------
-# SIDEBAR SETTINGS
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.header("Execution & Filters")
-
-    EXECUTION_MODE = st.radio(
-        "Live Market Strategy Mode",
-        ["Normal (Standard)", "Reverse (Contra Trading)"],
-        key="execution_mode"
-    )
-    IS_REVERSE_LIVE = EXECUTION_MODE.startswith("Reverse")
-
-    DEFAULT_SETTINGS = {
-        "capital": 50000,
-        "max_trades": 4,
-        "sl_atr_mult": 1.0,
-        "target_atr_mult": 2.0,
-        "trailing_enabled": True,
-        "breakeven_trigger_mult": 1.0,
-        "trail_dist_mult": 1.5,
-        "min_atr_pct_input": 0.20,
-        "one_trade_per_day": True,
-        "adx_filter_enabled": True,
-        "adx_threshold": 20,
-        "volume_filter_enabled": True,
-        "volume_mult": 1.2,
-        "avoid_lunch": True,
-        "signal_strength_frac": 0.3,
-    }
-
-    if st.button("Reset Settings", type="primary"):
-        for _key, _val in DEFAULT_SETTINGS.items():
-            st.session_state[_key] = _val
-        st.rerun()
-
-    TOTAL_CAPITAL = st.number_input("Total Capital (Rs)", value=DEFAULT_SETTINGS["capital"], step=5000, key="capital")
-    MAX_ACTIVE_TRADES = st.number_input("Max Active Trades", value=DEFAULT_SETTINGS["max_trades"], min_value=1, max_value=10, key="max_trades")
-
-    st.subheader("ATR SL / Target")
-    SL_ATR_MULT = st.number_input("SL = ATR x", value=DEFAULT_SETTINGS["sl_atr_mult"], step=0.1, format="%.1f", key="sl_atr_mult")
-    TARGET_ATR_MULT = st.number_input("Target = ATR x", value=DEFAULT_SETTINGS["target_atr_mult"], step=0.1, format="%.1f", key="target_atr_mult")
-
-    st.subheader("Trailing SL")
-    TRAILING_ENABLED = st.checkbox("Enable Trailing SL", value=DEFAULT_SETTINGS["trailing_enabled"], key="trailing_enabled")
-    BREAKEVEN_TRIGGER_MULT = st.number_input("Move SL to breakeven after (x ATR profit)", value=DEFAULT_SETTINGS["breakeven_trigger_mult"], step=0.1, format="%.1f", key="breakeven_trigger_mult")
-    TRAIL_DIST_MULT = st.number_input("Trail distance (x ATR)", value=DEFAULT_SETTINGS["trail_dist_mult"], step=0.1, format="%.1f", key="trail_dist_mult")
-
-    st.subheader("Filters")
-    MIN_ATR_PCT = st.number_input("Min 5-min ATR %", value=DEFAULT_SETTINGS["min_atr_pct_input"], step=0.05, format="%.2f", key="min_atr_pct_input") / 100
-    ADX_FILTER_ENABLED = st.checkbox("Require ADX filter", value=DEFAULT_SETTINGS["adx_filter_enabled"], key="adx_filter_enabled")
-    ADX_THRESHOLD = st.number_input("Min ADX Threshold", value=DEFAULT_SETTINGS["adx_threshold"], step=1, key="adx_threshold")
-    VOLUME_FILTER_ENABLED = st.checkbox("Require Volume Filter", value=DEFAULT_SETTINGS["volume_filter_enabled"], key="volume_filter_enabled")
-    VOLUME_MULT = st.number_input("Volume >= Avg x", value=DEFAULT_SETTINGS["volume_mult"], step=0.1, format="%.1f", key="volume_mult")
-    AVOID_LUNCH = st.checkbox("Avoid Lunch Hour (12:00-13:15)", value=DEFAULT_SETTINGS["avoid_lunch"], key="avoid_lunch")
-    SIGNAL_STRENGTH_FRAC = st.number_input("Min EMA-VWAP gap (x ATR)", value=DEFAULT_SETTINGS["signal_strength_frac"], step=0.05, format="%.2f", key="signal_strength_frac")
-    ONE_TRADE_PER_STOCK_PER_DAY = st.checkbox("Max 1 Trade/Stock/Day", value=DEFAULT_SETTINGS["one_trade_per_day"], key="one_trade_per_day")
-
-    if st.button("Reset TODAY's live signals"):
-        st.session_state.trade_log = {}
-        st.session_state.processed_keys = set()
-        st.session_state.traded_today = set()
-
-CAPITAL_PER_STOCK = TOTAL_CAPITAL / MAX_ACTIVE_TRADES
-
-if "trade_log" not in st.session_state:
-    st.session_state.trade_log = {}
-if "processed_keys" not in st.session_state:
-    st.session_state.processed_keys = set()
-if "traded_today" not in st.session_state:
-    st.session_state.traded_today = set()
-
-def is_market_open(now_dt):
-    return time(9, 15) <= now_dt.time() <= time(15, 30)
-
-def calculate_vwap(df):
-    v = df["Volume"].values
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    return (tp * v).cumsum() / np.maximum(v.cumsum(), 1)
+def calculate_ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
 def calculate_atr(df, period=14):
     high, low, close = df["High"], df["Low"], df["Close"]
@@ -184,20 +82,6 @@ def calculate_atr(df, period=14):
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.rolling(period, min_periods=period).mean()
-
-def calculate_adx(df, period=14):
-    high, low, close = df["High"], df["Low"], df["Close"]
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    prev_close = close.shift(1)
-    tr = pd.concat([(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    atr = tr.rolling(period, min_periods=period).mean()
-    plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(period, min_periods=period).mean() / atr.replace(0, np.nan)
-    minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(period, min_periods=period).mean() / atr.replace(0, np.nan)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    return dx.rolling(period, min_periods=period).mean()
 
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = entry_price * qty
@@ -211,367 +95,268 @@ def estimate_charges(entry_price, exit_price, qty):
     sebi_charges = total_turnover * 0.000001
     return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
 
-def passes_quality_filters(t_str, curr_ema, curr_vwap, curr_atr, curr_volume, avg_volume, curr_adx,
-                            adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac):
-    if avoid_lunch and ("12:00" <= t_str < "13:15"):
-        return False
-    if adx_enabled and (np.isnan(curr_adx) or curr_adx < adx_threshold):
-        return False
-    if vol_enabled and (np.isnan(avg_volume) or avg_volume <= 0 or curr_volume < avg_volume * vol_mult):
-        return False
-    if abs(curr_ema - curr_vwap) < curr_atr * signal_strength_frac:
-        return False
-    return True
+# -----------------------------------------------------------------------------
+# SIDEBAR PARAMETERS (Matching user script)
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Strategy Parameters")
+    FAST_MA_LEN = st.number_input("Fast EMA Length", value=50, step=5)
+    SLOW_MA_LEN = st.number_input("Slow EMA Length", value=200, step=10)
+    USE_ATR_STOP = st.checkbox("Use ATR Stop Loss", value=True)
+    ATR_LEN = st.number_input("ATR Length", value=14, step=1)
+    ATR_MULT = st.number_input("ATR Multiplier", value=3.0, step=0.5)
 
-def simulate_trade(highs, lows, closes, timestamps, start_idx, entry, is_long,
-                    atr_at_entry, sl_atr_mult, target_atr_mult, trailing_enabled,
-                    breakeven_trigger_mult, trail_dist_mult):
-    sl = round(entry - atr_at_entry * sl_atr_mult, 2) if is_long else round(entry + atr_at_entry * sl_atr_mult, 2)
-    target = round(entry + atr_at_entry * target_atr_mult, 2) if is_long else round(entry - atr_at_entry * target_atr_mult, 2)
-    peak = entry
-    stage = "initial"
-    status, exit_price, exit_idx = "LIVE", None, len(highs) - 1
+    st.subheader("💰 Execution Settings")
+    TRADE_VALUE = st.number_input("Trade Value per Stock (Rs)", value=3000, step=500)
+    TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", [5, 15, 30, 60], index=3)
 
-    for j in range(start_idx, len(highs)):
-        t_str = timestamps[j].strftime("%H:%M")
-        if trailing_enabled:
-            if is_long:
-                peak = max(peak, highs[j])
-                profit_atr = (peak - entry) / atr_at_entry
-                if stage == "initial" and profit_atr >= breakeven_trigger_mult:
-                    stage = "trailing"
-                    sl = max(sl, entry)
-                if stage == "trailing":
-                    sl = max(sl, round(peak - atr_at_entry * trail_dist_mult, 2))
-                target = round(peak + atr_at_entry * target_atr_mult, 2)
-            else:
-                peak = min(peak, lows[j])
-                profit_atr = (entry - peak) / atr_at_entry
-                if stage == "initial" and profit_atr >= breakeven_trigger_mult:
-                    stage = "trailing"
-                    sl = min(sl, entry)
-                if stage == "trailing":
-                    sl = min(sl, round(peak + atr_at_entry * trail_dist_mult, 2))
-                target = round(peak - atr_at_entry * target_atr_mult, 2)
+    if st.button("Clear Live Logs & Session"):
+        st.session_state.normal_trades = {}
+        st.session_state.reversal_trades = {}
+        st.session_state.processed_keys = set()
+        st.rerun()
 
-        hit_sl = (is_long and lows[j] <= sl) or (not is_long and highs[j] >= sl)
-        hit_target = not trailing_enabled and ((is_long and highs[j] >= target) or (not is_long and lows[j] <= target))
+# Session states initialization
+if "normal_trades" not in st.session_state:
+    st.session_state.normal_trades = {}
+if "reversal_trades" not in st.session_state:
+    st.session_state.reversal_trades = {}
+if "processed_keys" not in st.session_state:
+    st.session_state.processed_keys = set()
 
-        if hit_target:
-            status, exit_price, exit_idx = "TARGET", target, j
-            break
-        if hit_sl:
-            status = "TRAIL" if (trailing_enabled and ((is_long and sl > entry) or (not is_long and sl < entry))) else "SL"
-            exit_price, exit_idx = sl, j
-            break
-        if t_str >= "15:20":
-            status, exit_price, exit_idx = "SQOFF", round(float(closes[j]), 2), j
-            break
-    else:
-        exit_price, exit_idx = round(float(closes[-1]), 2), len(highs) - 1
-        status = "LIVE"
-
-    return status, exit_price, exit_idx, sl, target
-
-@st.cache_data(ttl=10, show_spinner=False)
-def fetch_all_data():
+# -----------------------------------------------------------------------------
+# DATA ENGINE & PROCESSOR
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_market_data(tf_mins):
+    tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
     try:
-        data = yf.download(tickers=" ".join(UNDER_300_WATCHLIST), period="1d", interval="5m", group_by="ticker", threads=True, progress=False, auto_adjust=False)
+        data = yf.download(tickers=" ".join(DEFAULT_STOCKS), period="5d", interval=tf_str, group_by="ticker", threads=True, progress=False)
+        return data
     except Exception:
         return {}
-    result = {}
-    for symbol in UNDER_300_WATCHLIST:
-        try:
-            df = data[symbol].dropna(how="all") if len(UNDER_300_WATCHLIST) > 1 else data
-            if df is not None and not df.empty and len(df) >= 20:
-                result[symbol] = df
-        except Exception:
-            continue
-    return result
 
-def count_live_trades():
-    return sum(1 for t in st.session_state.trade_log.values() if t["Status"] == "LIVE")
-
-def badge(text, cls):
-    return f'<span class="badge {cls}">{text}</span>'
-
-STATUS_BADGE = {
-    "LIVE": ("LIVE", "badge-live"),
-    "TARGET": ("TARGET HIT", "badge-target"),
-    "SL": ("SL HIT", "badge-sl"),
-    "TRAIL": ("TRAIL LOCKED", "badge-trail"),
-    "SQOFF": ("AUTO SQ-OFF", "badge-sqoff"),
-}
-
-def scan_and_update():
-    all_data = fetch_all_data()
+def process_signals():
+    data = fetch_market_data(TIMEFRAME_MINS)
     today_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
 
-    for symbol, df in all_data.items():
+    for symbol in DEFAULT_STOCKS:
         try:
+            df = data[symbol].dropna(how="all") if len(DEFAULT_STOCKS) > 1 else data
+            if df is None or len(df) < SLOW_MA_LEN:
+                continue
+
             df = df.copy()
-            df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-            df["VWAP"] = calculate_vwap(df)
-            df["ATR"] = calculate_atr(df, 14)
-            df["ADX"] = calculate_adx(df, 14)
-            df["AvgVol"] = df["Volume"].rolling(20, min_periods=20).mean()
+            df["FastEMA"] = calculate_ema(df["Close"], FAST_MA_LEN)
+            df["SlowEMA"] = calculate_ema(df["Close"], SLOW_MA_LEN)
+            df["ATR"] = calculate_atr(df, ATR_LEN)
 
             closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
-            ema20, vwap, atr = df["EMA20"].values, df["VWAP"].values, df["ATR"].values
-            adx, volume, avg_vol = df["ADX"].values, df["Volume"].values, df["AvgVol"].values
+            fast_ema, slow_ema, atr = df["FastEMA"].values, df["SlowEMA"].values, df["ATR"].values
             timestamps = df.index
 
-            for key, trade in list(st.session_state.trade_log.items()):
-                if trade["SymbolRaw"] != symbol or trade["Status"] != "LIVE":
-                    continue
-                entry_idx, is_long = trade["EntryIdx"], trade["IsLong"]
-                status, exit_price, exit_idx, final_sl, final_target = simulate_trade(
-                    highs, lows, closes, timestamps, entry_idx + 1, trade["Entry"], is_long, trade["ATRVal"],
-                    SL_ATR_MULT, TARGET_ATR_MULT, TRAILING_ENABLED, BREAKEVEN_TRIGGER_MULT, TRAIL_DIST_MULT
-                )
-                trade["SL"], trade["Target"], trade["CMP/Exit"], trade["Status"] = final_sl, final_target, exit_price, status
-                gross = round((exit_price - trade["Entry"]) * trade["Qty"], 2) if is_long else round((trade["Entry"] - exit_price) * trade["Qty"], 2)
-                trade["Gross P&L"] = gross
+            # Process Last Candle Signal
+            i = len(df) - 1
+            candle_key = f"{symbol}_{timestamps[i].isoformat()}"
+            t_str = timestamps[i].strftime("%H:%M")
 
-                if status != "LIVE":
-                    est_tax = estimate_charges(trade["Entry"], exit_price, trade["Qty"])
-                    net = round(gross - est_tax, 2)
-                    trade["Tax"], trade["Net P&L"] = est_tax, net
-                    append_history({
-                        "Date": today_str, "Time": trade["Time"], "Symbol": trade["Symbol"],
-                        "Mode": EXECUTION_MODE, "Type": trade["TypeLabel"], "Qty": trade["Qty"],
-                        "Entry": trade["Entry"], "SL": final_sl, "Target": final_target,
-                        "Exit": exit_price, "Status": status, "GrossPnL": gross,
-                        "Charges": est_tax, "NetPnL": net, "ATR": trade.get("ATRVal", None)
-                    })
-
-            for i in range(20, len(df)):
-                t_str = timestamps[i].strftime("%H:%M")
-                if t_str >= "15:15":
-                    break
-                candle_key = f"{symbol}_{timestamps[i].isoformat()}"
-                if candle_key in st.session_state.processed_keys:
-                    continue
+            if candle_key not in st.session_state.processed_keys:
                 st.session_state.processed_keys.add(candle_key)
 
-                curr_atr = atr[i]
-                if np.isnan(curr_atr) or curr_atr <= 0 or curr_atr < closes[i] * MIN_ATR_PCT:
-                    continue
-                if ONE_TRADE_PER_STOCK_PER_DAY and (symbol, today_str) in st.session_state.traded_today:
-                    continue
-                if not passes_quality_filters(t_str, ema20[i], vwap[i], curr_atr, volume[i], avg_vol[i], adx[i], ADX_FILTER_ENABLED, ADX_THRESHOLD, VOLUME_FILTER_ENABLED, VOLUME_MULT, AVOID_LUNCH, SIGNAL_STRENGTH_FRAC):
-                    continue
+                fast_curr, slow_curr = fast_ema[i], slow_ema[i]
+                fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
+                close_p, curr_atr = closes[i], atr[i]
 
-                bullish = ema20[i] > vwap[i]
-                long_pullback = bullish and (lows[i] <= ema20[i]) and (closes[i] > ema20[i]) and (closes[i] > vwap[i])
-                bearish = ema20[i] < vwap[i]
-                short_pullback = bearish and (highs[i] >= ema20[i]) and (closes[i] < ema20[i]) and (closes[i] < vwap[i])
+                # 1. NORMAL STRATEGY SIGNAL (Fast crosses above Slow -> BUY)
+                norm_signal = (fast_prev <= slow_prev and fast_curr > slow_curr) or (fast_curr > slow_curr)
+                if norm_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.normal_trades.values() if t["Status"] == "LIVE"]:
+                    qty = max(1, int(TRADE_VALUE / close_p))
+                    sl_p = close_p - (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 0.95
+                    st.session_state.normal_trades[f"NORM_{candle_key}"] = {
+                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), "Time": t_str,
+                        "Type": "BUY", "Qty": qty, "Entry": round(close_p, 2), "SL": round(sl_p, 2),
+                        "Status": "LIVE", "Exit": round(close_p, 2), "GrossPnL": 0.0, "NetPnL": 0.0, "Mode": "Normal"
+                    }
 
-                if not (long_pullback or short_pullback):
-                    continue
-                if count_live_trades() >= MAX_ACTIVE_TRADES:
-                    continue
+                # 2. REVERSAL STRATEGY SIGNAL (Fast crosses below Slow -> SELL/SHORT)
+                rev_signal = (fast_prev >= slow_prev and fast_curr < slow_curr) or (fast_curr < slow_curr)
+                if rev_signal and symbol not in [t["SymbolRaw"] for t in st.session_state.reversal_trades.values() if t["Status"] == "LIVE"]:
+                    qty = max(1, int(TRADE_VALUE / close_p))
+                    sl_p = close_p + (ATR_MULT * curr_atr) if USE_ATR_STOP and not np.isnan(curr_atr) else close_p * 1.05
+                    st.session_state.reversal_trades[f"REV_{candle_key}"] = {
+                        "SymbolRaw": symbol, "Symbol": symbol.replace(".NS", ""), "Time": t_str,
+                        "Type": "SELL", "Qty": qty, "Entry": round(close_p, 2), "SL": round(sl_p, 2),
+                        "Status": "LIVE", "Exit": round(close_p, 2), "GrossPnL": 0.0, "NetPnL": 0.0, "Mode": "Reversal"
+                    }
 
-                is_long = short_pullback if IS_REVERSE_LIVE else long_pullback
-                entry = round(float(closes[i]), 2)
-                qty = max(1, int(CAPITAL_PER_STOCK / entry))
-                sl_init = round(entry - curr_atr * SL_ATR_MULT, 2) if is_long else round(entry + curr_atr * SL_ATR_MULT, 2)
-                target_init = round(entry + curr_atr * TARGET_ATR_MULT, 2) if is_long else round(entry - curr_atr * TARGET_ATR_MULT, 2)
+            # Update Active Trades Status
+            for trade_dict in [st.session_state.normal_trades, st.session_state.reversal_trades]:
+                for k, t in list(trade_dict.items()):
+                    if t["SymbolRaw"] == symbol and t["Status"] == "LIVE":
+                        curr_close = closes[-1]
+                        t["Exit"] = round(curr_close, 2)
+                        is_long = t["Type"] == "BUY"
 
-                st.session_state.trade_log[candle_key] = {
-                    "SymbolRaw": symbol, "EntryIdx": i, "IsLong": is_long,
-                    "Time": t_str, "Symbol": symbol.replace(".NS", ""),
-                    "TypeLabel": "BUY" if is_long else "SELL", "Qty": qty,
-                    "Entry": entry, "SL": sl_init, "Target": target_init,
-                    "Status": "LIVE", "CMP/Exit": entry, "Gross P&L": 0.0,
-                    "Tax": None, "Net P&L": None, "ATRVal": round(float(curr_atr), 2)
-                }
-                if ONE_TRADE_PER_STOCK_PER_DAY:
-                    st.session_state.traded_today.add((symbol, today_str))
+                        # PnL Check
+                        gross = (curr_close - t["Entry"]) * t["Qty"] if is_long else (t["Entry"] - curr_close) * t["Qty"]
+                        t["GrossPnL"] = round(gross, 2)
+
+                        # Exit checks
+                        hit_sl = (is_long and curr_close <= t["SL"]) or (not is_long and curr_close >= t["SL"])
+                        if hit_sl:
+                            t["Status"] = "SL HIT"
+                            chg = estimate_charges(t["Entry"], curr_close, t["Qty"])
+                            net = round(gross - chg, 2)
+                            t["NetPnL"] = net
+                            append_db({
+                                "Date": today_str, "Time": t["Time"], "Symbol": t["Symbol"],
+                                "StrategyMode": t["Mode"], "Type": t["Type"], "Qty": t["Qty"],
+                                "Entry": t["Entry"], "SL": t["SL"], "Exit": t["Exit"],
+                                "Status": "SL HIT", "GrossPnL": gross, "Charges": chg, "NetPnL": net
+                            })
         except Exception:
             continue
 
-@st.fragment(run_every=10)
-def render_dashboard():
-    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    today_str = now_ist.strftime("%Y-%m-%d")
-    market_active = is_market_open(now_ist)
-    status_text = f"SCANNING LIVE ({EXECUTION_MODE})" if market_active else "MARKET CLOSED"
-
-    if market_active:
-        scan_and_update()
-
-    live_trades_list = list(st.session_state.trade_log.values())
-    history_df = load_history()
-
-    st.markdown(f'<div class="status-card"><b>Status:</b> {status_text} | <b>Date:</b> {today_str} | <b>Time (IST):</b> {now_ist.strftime("%H:%M:%S")}</div>', unsafe_allow_html=True)
-    st.markdown("---")
-    st.markdown(f"### Live Trade Terminal ({EXECUTION_MODE})")
-
-    if live_trades_list:
-        rows = []
-        for t in reversed(live_trades_list):
-            label, cls = STATUS_BADGE[t["Status"]]
-            type_cls = "badge-buy" if t["TypeLabel"] == "BUY" else "badge-sell"
-            rows.append({
-                "Time": t["Time"], "Symbol": t["Symbol"], "Type": badge(t["TypeLabel"], type_cls),
-                "Qty": t["Qty"], "Entry": t["Entry"], "SL": t["SL"], "Target": t["Target"],
-                "CMP/Exit": t["CMP/Exit"], "Status": badge(label, cls),
-                "Gross P&L": t["Gross P&L"], "Net P&L": t["Net P&L"] if t["Net P&L"] is not None else "-",
-            })
-        st.markdown(pd.DataFrame(rows).to_html(escape=False, index=False), unsafe_allow_html=True)
-    else:
-        st.info("No active signals right now.")
-
 # -----------------------------------------------------------------------------
-# DUAL BACKTEST (SIDE BY SIDE COMPARISON)
+# DUAL BACKTEST ENGINE (60 DAYS)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def run_dual_backtest(sl_atr_mult, target_atr_mult, min_atr_pct, one_per_day, trailing_enabled,
-                      breakeven_trigger_mult, trail_dist_mult, adx_enabled, adx_threshold,
-                      vol_enabled, vol_mult, avoid_lunch, signal_strength_frac, capital_per_stock, symbols):
+def run_60d_dual_backtest(fast_len, slow_len, atr_mult, use_atr, trade_val):
     try:
-        data = yf.download(tickers=" ".join(symbols), period="60d", interval="5m", group_by="ticker", threads=True, progress=False, auto_adjust=False)
+        data = yf.download(tickers=" ".join(DEFAULT_STOCKS), period="60d", interval="1h", group_by="ticker", threads=True, progress=False)
     except Exception:
         return pd.DataFrame(), pd.DataFrame()
 
-    normal_trades, reverse_trades = [], []
+    norm_list, rev_list = [], []
 
-    for symbol in symbols:
+    for symbol in DEFAULT_STOCKS:
         try:
-            df = data[symbol].dropna(how="all") if len(symbols) > 1 else data
-        except Exception:
-            continue
-        if df is None or df.empty:
-            continue
-
-        df = df.copy()
-        df["DateOnly"] = df.index.date
-
-        for day, day_df in df.groupby("DateOnly"):
-            day_df = day_df.copy()
-            if len(day_df) < 20:
+            df = data[symbol].dropna(how="all") if len(DEFAULT_STOCKS) > 1 else data
+            if df is None or len(df) < slow_len:
                 continue
 
-            day_df["EMA20"] = day_df["Close"].ewm(span=20, adjust=False).mean()
-            day_df["VWAP"] = calculate_vwap(day_df)
-            day_df["ATR"] = calculate_atr(day_df, 14)
-            day_df["ADX"] = calculate_adx(day_df, 14)
-            day_df["AvgVol"] = day_df["Volume"].rolling(20, min_periods=20).mean()
+            df = df.copy()
+            df["FastEMA"] = calculate_ema(df["Close"], fast_len)
+            df["SlowEMA"] = calculate_ema(df["Close"], slow_len)
+            df["ATR"] = calculate_atr(df, 14)
 
-            closes, highs, lows = day_df["Close"].values, day_df["High"].values, day_df["Low"].values
-            ema20, vwap, atr = day_df["EMA20"].values, day_df["VWAP"].values, day_df["ATR"].values
-            adx, volume, avg_vol = day_df["ADX"].values, day_df["Volume"].values, day_df["AvgVol"].values
-            timestamps = day_df.index
+            closes, highs, lows = df["Close"].values, df["High"].values, df["Low"].values
+            fast_ema, slow_ema, atr = df["FastEMA"].values, df["SlowEMA"].values, df["ATR"].values
+            timestamps = df.index
 
-            traded_this_day = False
-            i = 20
-            while i < len(day_df):
+            for i in range(slow_len, len(df)):
+                fast_curr, slow_curr = fast_ema[i], slow_ema[i]
+                fast_prev, slow_prev = fast_ema[i-1], slow_ema[i-1]
+                entry_p, curr_atr = closes[i], atr[i]
                 t_str = timestamps[i].strftime("%H:%M")
-                if t_str >= "15:15" or (one_per_day and traded_this_day):
-                    break
+                date_str = timestamps[i].strftime("%Y-%m-%d")
 
-                curr_atr = atr[i]
-                if np.isnan(curr_atr) or curr_atr <= 0 or curr_atr < closes[i] * min_atr_pct:
-                    i += 1
-                    continue
-                if not passes_quality_filters(t_str, ema20[i], vwap[i], curr_atr, volume[i], avg_vol[i], adx[i], adx_enabled, adx_threshold, vol_enabled, vol_mult, avoid_lunch, signal_strength_frac):
-                    i += 1
-                    continue
+                # --- Normal (Long Crossover) ---
+                if fast_prev <= slow_prev and fast_curr > slow_curr:
+                    qty = max(1, int(trade_val / entry_p))
+                    sl_p = entry_p - (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 0.95
+                    exit_p = closes[min(i+5, len(df)-1)] # Exit simulation after 5 bars or SL
+                    gross = round((exit_p - entry_p) * qty, 2)
+                    chg = estimate_charges(entry_p, exit_p, qty)
+                    norm_list.append({"Date": date_str, "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "BUY", "Qty": qty, "Entry": round(entry_p, 2), "Exit": round(exit_p, 2), "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)})
 
-                bullish = ema20[i] > vwap[i]
-                long_pullback = bullish and (lows[i] <= ema20[i]) and (closes[i] > ema20[i]) and (closes[i] > vwap[i])
-                bearish = ema20[i] < vwap[i]
-                short_pullback = bearish and (highs[i] >= ema20[i]) and (closes[i] < ema20[i]) and (closes[i] < vwap[i])
+                # --- Reversal (Short Crossunder) ---
+                if fast_prev >= slow_prev and fast_curr < slow_curr:
+                    qty = max(1, int(trade_val / entry_p))
+                    sl_p = entry_p + (atr_mult * curr_atr) if use_atr and not np.isnan(curr_atr) else entry_p * 1.05
+                    exit_p = closes[min(i+5, len(df)-1)]
+                    gross = round((entry_p - exit_p) * qty, 2)
+                    chg = estimate_charges(entry_p, exit_p, qty)
+                    rev_list.append({"Date": date_str, "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "SELL", "Qty": qty, "Entry": round(entry_p, 2), "Exit": round(exit_p, 2), "GrossPnL": gross, "Charges": chg, "NetPnL": round(gross - chg, 2)})
 
-                if not (long_pullback or short_pullback):
-                    i += 1
-                    continue
+        except Exception:
+            continue
 
-                entry = round(float(closes[i]), 2)
-                qty = max(1, int(capital_per_stock / entry))
+    return pd.DataFrame(norm_list), pd.DataFrame(rev_list)
 
-                # --- 1. NORMAL TRADE ---
-                is_long_norm = long_pullback
-                status_n, exit_n, exit_j_n, final_sl_n, final_target_n = simulate_trade(
-                    highs, lows, closes, timestamps, i + 1, entry, is_long_norm, curr_atr,
-                    sl_atr_mult, target_atr_mult, trailing_enabled, breakeven_trigger_mult, trail_dist_mult
-                )
-                if status_n == "LIVE": status_n, exit_n = "SQOFF", round(float(closes[-1]), 2)
-                gross_n = round((exit_n - entry) * qty, 2) if is_long_norm else round((entry - exit_n) * qty, 2)
-                chg_n = estimate_charges(entry, exit_n, qty)
-                normal_trades.append({"Date": str(day), "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "BUY" if is_long_norm else "SELL", "Qty": qty, "Entry": entry, "Exit": exit_n, "Status": status_n, "GrossPnL": gross_n, "Charges": chg_n, "NetPnL": round(gross_n - chg_n, 2)})
+# -----------------------------------------------------------------------------
+# APP TABS & UI ROUTING
+# -----------------------------------------------------------------------------
+tab1, tab2, tab3 = st.tabs([
+    "🟢 Tab 1: Normal Strategy (Trend Following)",
+    "🔴 Tab 2: Reversal Strategy (Contra Trend)",
+    "📊 Tab 3: Backtest Analytics & DB Logs"
+])
 
-                # --- 2. REVERSE TRADE ---
-                is_long_rev = short_pullback
-                status_r, exit_r, exit_j_r, final_sl_r, final_target_r = simulate_trade(
-                    highs, lows, closes, timestamps, i + 1, entry, is_long_rev, curr_atr,
-                    sl_atr_mult, target_atr_mult, trailing_enabled, breakeven_trigger_mult, trail_dist_mult
-                )
-                if status_r == "LIVE": status_r, exit_r = "SQOFF", round(float(closes[-1]), 2)
-                gross_r = round((exit_r - entry) * qty, 2) if is_long_rev else round((entry - exit_r) * qty, 2)
-                chg_r = estimate_charges(entry, exit_r, qty)
-                reverse_trades.append({"Date": str(day), "Time": t_str, "Symbol": symbol.replace(".NS",""), "Type": "BUY" if is_long_rev else "SELL", "Qty": qty, "Entry": entry, "Exit": exit_r, "Status": status_r, "GrossPnL": gross_r, "Charges": chg_r, "NetPnL": round(gross_r - chg_r, 2)})
+# Process live updates
+process_signals()
 
-                traded_this_day = True
-                i = max(exit_j_n, exit_j_r) + 1
-
-    return pd.DataFrame(normal_trades), pd.DataFrame(reverse_trades)
-
-def render_backtest_tab():
-    st.markdown("### Side-by-Side Comparison Backtest (Last 60 Days)")
-    st.caption("Donon strategies (Normal vs Reverse) ko same market data par compare karke dekhein:")
-
-    if st.button("Run Comparison Backtest", type="primary"):
-        with st.spinner("Analyzing Normal and Reverse strategies side-by-side..."):
-            norm_df, rev_df = run_dual_backtest(
-                SL_ATR_MULT, TARGET_ATR_MULT, MIN_ATR_PCT, ONE_TRADE_PER_STOCK_PER_DAY, TRAILING_ENABLED,
-                BREAKEVEN_TRIGGER_MULT, TRAIL_DIST_MULT, ADX_FILTER_ENABLED, ADX_THRESHOLD,
-                VOLUME_FILTER_ENABLED, VOLUME_MULT, AVOID_LUNCH, SIGNAL_STRENGTH_FRAC, CAPITAL_PER_STOCK, UNDER_300_WATCHLIST
-            )
-            st.session_state.norm_result = norm_df
-            st.session_state.rev_result = rev_df
-
-    norm_df = st.session_state.get("norm_result")
-    rev_df = st.session_state.get("rev_result")
-
-    if norm_df is None or rev_df is None:
-        st.info("Button par click karke comparison run karein.")
+def render_trade_table(trade_dict, title):
+    st.markdown(f"### {title}")
+    trades = list(trade_dict.values())
+    if not trades:
+        st.info("No active signals right now.")
         return
+    df = pd.DataFrame(trades)[["Time", "Symbol", "Type", "Qty", "Entry", "SL", "Exit", "Status", "GrossPnL", "NetPnL"]]
+    st.dataframe(df, use_container_width=True)
 
-    col1, col2 = st.columns(2)
-
-    def display_metrics(df, title):
-        if df.empty:
-            st.warning(f"No trades for {title}")
-            return
-        total = len(df)
-        wins = len(df[df["Status"].isin(["TARGET", "TRAIL"])])
-        win_rate = round((wins / total) * 100, 1) if total else 0
-        gross = round(df["GrossPnL"].sum(), 2)
-        charges = round(df["Charges"].sum(), 2)
-        net = round(df["NetPnL"].sum(), 2)
-        color = "#4CAF50" if net >= 0 else "#FF5252"
-
-        st.markdown(f"#### {title}")
-        st.markdown(f"""
-            <div class="pnl-card">
-                <b>Total Trades:</b> {total} | <b>Win Rate:</b> {win_rate}%<br>
-                <b>Gross P&L:</b> {RUPEE}{gross} | <b>Charges:</b> {RUPEE}{charges}<br>
-                <b>Net P&L:</b> <span style="color:{color}; font-weight:bold;">{RUPEE}{net}</span>
-            </div>
-        """, unsafe_allow_html=True)
-        st.dataframe(df, use_container_width=True)
-
-    with col1:
-        display_metrics(norm_df, "1. Normal Strategy (Standard)")
-
-    with col2:
-        display_metrics(rev_df, "2. Reverse Strategy (Contra Mode)")
-
-# Execution
-tab1, tab2 = st.tabs(["Live Dashboard", "Backtest Comparison"])
+# TAB 1: NORMAL STRATEGY
 with tab1:
-    render_dashboard()
+    st.markdown("#### 🟢 Normal Trend Strategy Terminal (EMA Fast > Slow)")
+    st.caption(f"Strategy Rules: BUY when EMA({FAST_MA_LEN}) > EMA({SLOW_MA_LEN}). Stop loss at ATR({ATR_LEN}) x {ATR_MULT}.")
+    render_trade_table(st.session_state.normal_trades, "Live Normal Strategy Signals")
+
+# TAB 2: REVERSAL STRATEGY
 with tab2:
-    render_backtest_tab()
+    st.markdown("#### 🔴 Reversal Strategy Terminal (EMA Fast < Slow)")
+    st.caption(f"Strategy Rules: SELL/SHORT when EMA({FAST_MA_LEN}) < EMA({SLOW_MA_LEN}). Stop loss at ATR({ATR_LEN}) x {ATR_MULT}.")
+    render_trade_table(st.session_state.reversal_trades, "Live Reversal Strategy Signals")
+
+# TAB 3: BACKTEST & DB ANALYTICS
+with tab3:
+    st.markdown("### 📊 Dual Backtest & Historical DB Analytics")
+
+    col_btn, col_empty = st.columns([1, 4])
+    with col_btn:
+        run_btn = st.button("Run 60-Day Dual Backtest", type="primary")
+
+    if run_btn:
+        with st.spinner("Processing 60-day backtest for both Normal and Reversal strategies..."):
+            norm_bt, rev_bt = run_60d_dual_backtest(FAST_MA_LEN, SLOW_MA_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE)
+            st.session_state.norm_bt = norm_bt
+            st.session_state.rev_bt = rev_bt
+
+    norm_bt = st.session_state.get("norm_bt")
+    rev_bt = st.session_state.get("rev_bt")
+
+    if norm_bt is not None and rev_bt is not None:
+        c1, c2 = st.columns(2)
+
+        def render_bt_summary(df, name):
+            if df.empty:
+                st.warning(f"No backtest trades for {name}")
+                return
+            tot = len(df)
+            wins = len(df[df["NetPnL"] > 0])
+            wr = round((wins / tot) * 100, 1)
+            net_pnl = round(df["NetPnL"].sum(), 2)
+            charges = round(df["Charges"].sum(), 2)
+            color = "#4CAF50" if net_pnl >= 0 else "#FF5252"
+
+            st.markdown(f"#### {name}")
+            st.markdown(f"""
+                <div class="pnl-card">
+                    <b>Total Trades:</b> {tot} | <b>Win Rate:</b> {wr}%<br>
+                    <b>Total Charges:</b> {RUPEE}{charges}<br>
+                    <b>Net P&L:</b> <span style="color:{color}; font-weight:bold;">{RUPEE}{net_pnl}</span>
+                </div>
+            """, unsafe_allow_html=True)
+            st.dataframe(df, use_container_width=True)
+
+        with c1:
+            render_bt_summary(norm_bt, "Normal Strategy (60D)")
+        with c2:
+            render_bt_summary(rev_bt, "Reversal Strategy (60D)")
+
+    st.markdown("---")
+    st.markdown("### 🗄️ Real Live History Database (DB Logs)")
+    db_df = load_db()
+    if not db_df.empty:
+        st.dataframe(db_df, use_container_width=True)
+    else:
+        st.info("No saved trade records in Database yet. Signals will be logged here when Stop Losses or Exits trigger.")
