@@ -16,9 +16,9 @@ except Exception:
 
 
 # =============================================================================
-# PAGE CONFIG & STYLES â€” dashboard kept in the same 3-tab structure
+# PAGE CONFIG & STYLES - dashboard kept in the same 3-tab structure
 # =============================================================================
-st.set_page_config(page_title="EMA Live Terminal & Backtest", layout="wide")
+st.set_page_config(page_title="EMA Intraday Live Terminal & 3-Month Backtest", layout="wide")
 
 st.markdown("""
 <style>
@@ -91,7 +91,7 @@ def upsert_trade_to_db(trade_data: dict):
 
 
 # =============================================================================
-# INDICATORS / STRATEGY â€” one shared engine for live + backtest
+# INDICATORS / STRATEGY - one shared engine for live + backtest
 # =============================================================================
 def calculate_ema(series, period):
     return series.ewm(span=int(period), adjust=False).mean()
@@ -613,7 +613,7 @@ def process_live(groww, selected_stocks, tf_mins, fast_len, slow_len, atr_len,
 
 
 # =============================================================================
-# BACKTEST â€” same signal/SL/exit rules, no look-ahead
+# BACKTEST - same signal/SL/exit rules, no look-ahead
 # =============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def run_60d_dual_backtest_public(stocks_list, fast_len, slow_len, atr_len,
@@ -774,15 +774,15 @@ def run_60d_dual_backtest_public(stocks_list, fast_len, slow_len, atr_len,
 
 
 # =============================================================================
-# SIDEBAR â€” same controls + Groww live control
+# SIDEBAR - same controls + Groww live control
 # =============================================================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = DEFAULT_STOCKS.copy()
 
 with st.sidebar:
-    st.header("ðŸ” Dynamic Share Selection")
+    st.header("Dynamic Share Selection")
     new_stock = st.text_input("Add Custom NSE Ticker (e.g. ZOMATO):", "").strip().upper()
-    if st.button("âž• Add Share to Watchlist"):
+    if st.button("Add Share to Watchlist"):
         if new_stock:
             formatted = new_stock if new_stock.endswith(".NS") else f"{new_stock}.NS"
             if formatted not in st.session_state.watchlist:
@@ -798,24 +798,24 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.header("âš™ï¸ Strategy Parameters")
+    st.header("Strategy Parameters")
     FAST_MA_LEN = st.number_input("Fast EMA Length", value=20, step=5)
     SLOW_MA_LEN = st.number_input("Slow EMA Length", value=50, step=5)
     USE_ATR_STOP = st.checkbox("Use ATR Stop Loss", value=True)
     ATR_LEN = st.number_input("ATR Length", value=14, step=1)
     ATR_MULT = st.number_input("ATR Multiplier", value=3.0, step=0.5)
 
-    st.subheader("ðŸ’° Execution & Margin Settings")
+    st.subheader("Execution & Margin Settings")
     TRADE_VALUE = st.number_input("Trade Capital per Stock (Rs)", value=3000, step=500)
     LEVERAGE = st.number_input("Intraday Margin Leverage (e.g. 5x)", value=5, min_value=1, max_value=20, step=1)
     TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", [5, 15, 30, 60], index=1)
     SLIPPAGE_BPS = st.number_input("Backtest Slippage (bps)", value=5.0, min_value=0.0, step=1.0)
 
     st.markdown("---")
-    st.subheader("ðŸ” Groww Real Trading")
+    st.subheader("Groww Real Trading")
     live_trading_secret = str(get_secret("LIVE_TRADING", "false")).lower() == "true"
     LIVE_TRADING = st.checkbox(
-        "âš ï¸ Enable REAL Groww Orders",
+        "Enable REAL Groww Orders",
         value=False,
         help="Real orders are sent only when LIVE_TRADING=true is also present in Streamlit secrets."
     )
@@ -823,9 +823,9 @@ with st.sidebar:
         st.error("REAL trading locked: set LIVE_TRADING=true in Streamlit secrets.")
         LIVE_TRADING = False
 
-    AUTO_REFRESH = st.checkbox("ðŸ”„ Auto-Refresh Live P&L (15 sec)", value=True)
+    AUTO_REFRESH = st.checkbox("Auto-Refresh Live P&L (15 sec)", value=True)
 
-    if st.button("ðŸ—‘ï¸ Reset Entire History DB"):
+    if st.button("Reset Entire History DB"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
         st.session_state.processed_keys = set()
@@ -833,7 +833,7 @@ with st.sidebar:
         st.rerun()
 
 if not SELECTED_STOCKS:
-    st.warning("âš ï¸ Kam se kam 1 share select karein.")
+    st.warning("Please select at least one stock.")
     st.stop()
 
 if "processed_keys" not in st.session_state:
@@ -863,7 +863,7 @@ else:
 
 
 # =============================================================================
-# DASHBOARD RENDERERS â€” same tabs/cards
+# DASHBOARD RENDERERS - same tabs/cards
 # =============================================================================
 def render_live_strategy_tab(strategy_mode, title):
     st.markdown(f"### {title}")
@@ -906,14 +906,14 @@ def render_live_strategy_tab(strategy_mode, title):
         "GrossPnL", "Charges", "NetPnL"
     ]
 
-    st.markdown("#### ðŸŸ¢ Active (LIVE) Positions")
+    st.markdown("#### Active (LIVE) Positions")
     if not active_df.empty:
         active_df["Sr"] = range(1, len(active_df) + 1)
         st.dataframe(active_df[col_order], use_container_width=True, hide_index=True)
     else:
         st.caption("Abhi koi open position nahi hai.")
 
-    st.markdown("#### ðŸ—„ï¸ Closed Trades History")
+    st.markdown("#### Closed Trades History")
     if not closed_df.empty:
         closed_df["Sr"] = range(1, len(closed_df) + 1)
         st.dataframe(closed_df[col_order], use_container_width=True, hide_index=True)
@@ -922,28 +922,28 @@ def render_live_strategy_tab(strategy_mode, title):
 
 
 # =============================================================================
-# APP TABS â€” unchanged dashboard structure
+# APP TABS - unchanged dashboard structure
 # =============================================================================
 tab1, tab2, tab3 = st.tabs([
-    "ðŸŸ¢ Tab 1: Live Normal Strategy",
-    "ðŸ”´ Tab 2: Live Reversal Strategy",
-    "ðŸ“Š Tab 3: Backtest & History Database"
+    "Tab 1: Live Normal Strategy",
+    "Tab 2: Live Reversal Strategy",
+    "Tab 3: Backtest & History Database"
 ])
 
 with tab1:
-    render_live_strategy_tab("Normal", "ðŸŸ¢ Live Normal Strategy Terminal")
+    render_live_strategy_tab("Normal", "Live Normal Strategy Terminal")
 
 with tab2:
-    render_live_strategy_tab("Reversal", "ðŸ”´ Live Reversal Strategy Terminal")
+    render_live_strategy_tab("Reversal", "Live Reversal Strategy Terminal")
 
 with tab3:
-    st.markdown("### ðŸ“Š Dual Backtest Engine & Database Logs")
+    st.markdown("### Dual Backtest Engine & Database Logs")
     col_btn, _ = st.columns([1, 4])
     with col_btn:
-        run_btn = st.button("â–¶ï¸ Run 60-Day Backtest", type="primary")
+        run_btn = st.button("Run 3-Month Backtest", type="primary")
 
     if run_btn:
-        with st.spinner("Groww historical data par 60-day backtest calculate ho raha hai..."):
+        with st.spinner("Calculating the 3-month intraday backtest using Groww historical data..."):
             try:
                 norm_bt, rev_bt = run_60d_dual_backtest_public(
                     tuple(SELECTED_STOCKS), int(FAST_MA_LEN), int(SLOW_MA_LEN),
@@ -998,7 +998,7 @@ with tab3:
             render_bt_summary(rev_bt, "Reversal Contra Strategy")
 
     st.markdown("---")
-    st.markdown("### ðŸ—„ï¸ All Live & Closed Trades Master Database")
+    st.markdown("### All Live & Closed Trades Master Database")
     db_df = load_db()
     if not db_df.empty:
         st.dataframe(db_df, use_container_width=True, hide_index=True)
