@@ -1,6 +1,5 @@
 streamlit
-streamlit-autorefresh
-yfinance
 pandas
 numpy
-growwapi
+yfinance
+growwapi>=1.5.0
