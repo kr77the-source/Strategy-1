@@ -146,7 +146,6 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
         current_dt = df.index[i]
         c_time = current_dt.time()
         
-        # Determine if next bar exists or if candle is end of day
         is_last_candle_of_day = False
         if i + 1 < len(df):
             next_dt = df.index[i + 1]
@@ -156,7 +155,6 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
             if c_time >= dt_time(15, 15):
                 is_last_candle_of_day = True
 
-        # Check Exits for active trade
         if open_trade is not None:
             hi, lo, close = float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
             exit_price, reason, exit_time_str = None, None, None
@@ -206,7 +204,6 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                 open_trade = None
                 continue
 
-        # Check Entries
         if c_time < dt_time(15, 0) and not is_last_candle_of_day:
             ns, rs = signal_at(df, i)
             trigger = ns if side == "BUY" else rs
@@ -227,7 +224,6 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                     "Qty": qty
                 }
 
-    # If position is still open right now in live market
     if open_trade is not None:
         latest_close = float(df["Close"].iloc[-1])
         entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
@@ -271,9 +267,7 @@ def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, at
         symbol_clean = symbol.replace(".NS", "")
         df = raw_data[symbol].dropna(how="all") if len(selected_stocks) > 1 else raw_data
         
-        # Run Simulation for Normal (BUY)
         norm_trades = run_simulation(df, symbol_clean, "Normal", "BUY", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
-        # Run Simulation for Reversal (SELL)
         rev_trades = run_simulation(df, symbol_clean, "Reversal", "SELL", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
         
         all_live_trades.extend(norm_trades)
@@ -281,8 +275,6 @@ def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, at
 
     if all_live_trades:
         df_new = pd.DataFrame(all_live_trades)
-        
-        # Filter for today's trades only for live view
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         df_today = df_new[df_new["Date"] == today_str].copy()
         
@@ -429,13 +421,55 @@ with tab3:
 
     if norm_bt is not None and not norm_bt.empty:
         st.markdown("#### 🟢 Normal Strategy 60-Day Backtest Results")
-        norm_bt.insert(0, "Sr", range(1, len(norm_bt) + 1))
+        
+        # P&L Summary Dashboard wapas add kar diya
+        t_trades = len(norm_bt)
+        t_gross = norm_bt["GrossPnL"].astype(float).sum()
+        t_charges = norm_bt["Charges"].astype(float).sum()
+        t_net = round(t_gross - t_charges, 2)
+        net_class = "metric-val-green" if t_net >= 0 else "metric-val-red"
+        gross_class = "metric-val-green" if t_gross >= 0 else "metric-val-red"
+
+        st.markdown(f"""
+            <div class="top-pnl-card">
+                <div style="display: flex; justify-content: space-around; text-align: center;">
+                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{t_trades}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{t_gross:.2f}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{t_charges:.2f}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{t_net:.2f}</span></div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if "Sr" not in norm_bt.columns:
+            norm_bt.insert(0, "Sr", range(1, len(norm_bt) + 1))
         st.dataframe(norm_bt, use_container_width=True, hide_index=True)
 
     if rev_bt is not None and not rev_bt.empty:
         st.markdown("---")
         st.markdown("#### 🔴 Reversal Strategy 60-Day Backtest Results")
-        rev_bt.insert(0, "Sr", range(1, len(rev_bt) + 1))
+        
+        # P&L Summary Dashboard wapas add kar diya
+        r_trades = len(rev_bt)
+        r_gross = rev_bt["GrossPnL"].astype(float).sum()
+        r_charges = rev_bt["Charges"].astype(float).sum()
+        r_net = round(r_gross - r_charges, 2)
+        r_net_class = "metric-val-green" if r_net >= 0 else "metric-val-red"
+        r_gross_class = "metric-val-green" if r_gross >= 0 else "metric-val-red"
+
+        st.markdown(f"""
+            <div class="top-pnl-card">
+                <div style="display: flex; justify-content: space-around; text-align: center;">
+                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{r_trades}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{r_gross_class}">{RUPEE}{r_gross:.2f}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{r_charges:.2f}</span></div>
+                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{r_net_class}">{RUPEE}{r_net:.2f}</span></div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if "Sr" not in rev_bt.columns:
+            rev_bt.insert(0, "Sr", range(1, len(rev_bt) + 1))
         st.dataframe(rev_bt, use_container_width=True, hide_index=True)
 
     st.markdown("---")
