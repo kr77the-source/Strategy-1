@@ -52,7 +52,7 @@ DEFAULT_STOCKS = [
 HISTORY_FILE = "strategy_history_db.csv"
 HISTORY_COLUMNS = [
     "TradeID", "Sr", "Date", "EntryTime", "ExitTime", "Symbol", "StrategyMode",
-    "Type", "Qty", "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status",
+    "Type", "Qty", "EntryPrice", "Target", "SL", "CurrentPrice", "ExitPrice", "Status",
     "GrossPnL", "Charges", "NetPnL", "EntryReason", "ExitReason"
 ]
 
@@ -142,9 +142,9 @@ def fetch_data(stocks_list, period_str, tf_mins):
         return {}
 
 # =============================================================================
-# UNIFIED SIMULATION ENGINE (STRICT MARKET TIME CHECK)
+# UNIFIED SIMULATION ENGINE WITH TARGET & SL
 # =============================================================================
-def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_val, leverage, slippage_bps):
+def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_val, leverage, slippage_bps):
     if df is None or len(df) < slow_len + 5:
         return []
 
@@ -175,16 +175,26 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
             hi, lo, close = float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
             exit_price, reason, exit_time_str = None, None, None
 
-            if side == "BUY" and use_atr and lo <= open_trade["SL"]:
+            # 1. Target Check
+            if side == "BUY" and hi >= open_trade["Target"]:
+                exit_price, reason = open_trade["Target"], "TARGET_HIT"
+                exit_time_str = current_dt.strftime("%H:%M:%S")
+            elif side == "SELL" and lo <= open_trade["Target"]:
+                exit_price, reason = open_trade["Target"], "TARGET_HIT"
+                exit_time_str = current_dt.strftime("%H:%M:%S")
+            # 2. Stop Loss Check
+            elif side == "BUY" and use_atr and lo <= open_trade["SL"]:
                 exit_price, reason = open_trade["SL"], "SL_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
             elif side == "SELL" and use_atr and hi >= open_trade["SL"]:
                 exit_price, reason = open_trade["SL"], "SL_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
+            # 3. EOD Squareoff
             elif is_last_candle_of_day:
                 exit_price = apply_slippage(close, "SELL" if side == "BUY" else "BUY", slippage_bps)
                 reason = "EOD_SQUAREOFF"
                 exit_time_str = "15:25:00"
+            # 4. Opposite Signal Exit
             else:
                 ns, rs = signal_at(df, i)
                 if (side == "BUY" and rs) or (side == "SELL" and ns):
@@ -207,9 +217,10 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                     "Type": side,
                     "Qty": qty,
                     "EntryPrice": round(entry, 2),
+                    "Target": round(open_trade["Target"], 2),
+                    "SL": round(open_trade["SL"], 2),
                     "CurrentPrice": round(exit_price, 2),
                     "ExitPrice": round(exit_price, 2),
-                    "SL": round(open_trade["SL"], 2),
                     "Status": f"CLOSED ({reason})",
                     "GrossPnL": round(gross, 2),
                     "Charges": chg,
@@ -228,7 +239,11 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                 entry_raw = float(df["Open"].iloc[i + 1])
                 entry = apply_slippage(entry_raw, side, slippage_bps)
                 atr = float(df["ATR"].iloc[i])
-                sl = (entry - atr_mult * atr) if side == "BUY" else (entry + atr_mult * atr)
+                
+                risk_per_share = atr_mult * atr
+                sl = (entry - risk_per_share) if side == "BUY" else (entry + risk_per_share)
+                target = (entry + (risk_per_share * target_rr)) if side == "BUY" else (entry - (risk_per_share * target_rr))
+                
                 qty = max(1, int(buying_power / max(entry, 0.01)))
                 
                 open_trade = {
@@ -236,67 +251,49 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                     "Date": entry_dt.strftime("%Y-%m-%d"),
                     "EntryTime": entry_dt.strftime("%H:%M:%S"),
                     "EntryPrice": entry,
+                    "Target": target,
                     "SL": sl,
                     "Qty": qty
                 }
 
-    # Strict Check: If trade remains open after loop
     if open_trade is not None:
         latest_close = float(df["Close"].iloc[-1])
         entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
         gross = (latest_close - entry) * qty if side == "BUY" else (entry - latest_close) * qty
         chg = estimate_charges(entry, latest_close, qty)
         
-        # If market is closed right now, force close it as EOD_SQUAREOFF
-        if is_market_closed_now or open_trade["Date"] < today_str:
-            trades.append({
-                "TradeID": open_trade["TradeID"],
-                "Date": open_trade["Date"],
-                "EntryTime": open_trade["EntryTime"],
-                "ExitTime": "15:25:00",
-                "Symbol": symbol_clean,
-                "StrategyMode": mode,
-                "Type": side,
-                "Qty": qty,
-                "EntryPrice": round(entry, 2),
-                "CurrentPrice": round(latest_close, 2),
-                "ExitPrice": round(latest_close, 2),
-                "SL": round(open_trade["SL"], 2),
-                "Status": "CLOSED (EOD_SQUAREOFF)",
-                "GrossPnL": round(gross, 2),
-                "Charges": chg,
-                "NetPnL": round(gross - chg, 2),
-                "EntryReason": "EMA_CROSSOVER",
-                "ExitReason": "EOD_SQUAREOFF"
-            })
-        else:
-            trades.append({
-                "TradeID": open_trade["TradeID"],
-                "Date": open_trade["Date"],
-                "EntryTime": open_trade["EntryTime"],
-                "ExitTime": "-",
-                "Symbol": symbol_clean,
-                "StrategyMode": mode,
-                "Type": side,
-                "Qty": qty,
-                "EntryPrice": round(entry, 2),
-                "CurrentPrice": round(latest_close, 2),
-                "ExitPrice": "-",
-                "SL": round(open_trade["SL"], 2),
-                "Status": "LIVE",
-                "GrossPnL": round(gross, 2),
-                "Charges": chg,
-                "NetPnL": round(gross - chg, 2),
-                "EntryReason": "EMA_CROSSOVER",
-                "ExitReason": "-"
-            })
+        status_str = "CLOSED (EOD_SQUAREOFF)" if (is_market_closed_now or open_trade["Date"] < today_str) else "LIVE"
+        exit_time = "15:25:00" if status_str != "LIVE" else "-"
+        exit_p = round(latest_close, 2) if status_str != "LIVE" else "-"
+
+        trades.append({
+            "TradeID": open_trade["TradeID"],
+            "Date": open_trade["Date"],
+            "EntryTime": open_trade["EntryTime"],
+            "ExitTime": exit_time,
+            "Symbol": symbol_clean,
+            "StrategyMode": mode,
+            "Type": side,
+            "Qty": qty,
+            "EntryPrice": round(entry, 2),
+            "Target": round(open_trade["Target"], 2),
+            "SL": round(open_trade["SL"], 2),
+            "CurrentPrice": round(latest_close, 2),
+            "ExitPrice": exit_p,
+            "Status": status_str,
+            "GrossPnL": round(gross, 2),
+            "Charges": chg,
+            "NetPnL": round(gross - chg, 2),
+            "EntryReason": "EMA_CROSSOVER",
+            "ExitReason": "EOD_SQUAREOFF" if status_str != "LIVE" else "-"
+        })
 
     return trades
 
 # =============================================================================
 # PROCESS TODAY'S LIVE TRADES
 # =============================================================================
-def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps):
+def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps):
     raw_data = fetch_data(selected_stocks, "5d", tf_mins)
     if raw_data is None or (isinstance(raw_data, dict) and not raw_data):
         return
@@ -307,8 +304,8 @@ def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, at
         symbol_clean = symbol.replace(".NS", "")
         df = raw_data[symbol].dropna(how="all") if len(selected_stocks) > 1 else raw_data
         
-        norm_trades = run_simulation(df, symbol_clean, "Normal", "BUY", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
-        rev_trades = run_simulation(df, symbol_clean, "Reversal", "SELL", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
+        norm_trades = run_simulation(df, symbol_clean, "Normal", "BUY", fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps)
+        rev_trades = run_simulation(df, symbol_clean, "Reversal", "SELL", fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps)
         
         all_live_trades.extend(norm_trades)
         all_live_trades.extend(rev_trades)
@@ -352,7 +349,8 @@ with st.sidebar:
     SLOW_MA_LEN = st.number_input("Slow EMA Length", value=50, step=5)
     USE_ATR_STOP = st.checkbox("Use ATR Stop Loss", value=True)
     ATR_LEN = st.number_input("ATR Length", value=14, step=1)
-    ATR_MULT = st.number_input("ATR Multiplier", value=3.0, step=0.5)
+    ATR_MULT = st.number_input("ATR Multiplier (SL)", value=3.0, step=0.5)
+    TARGET_RR = st.number_input("Target Risk:Reward (1:X)", value=2.0, step=0.5)
 
     st.subheader("💰 Execution & Margin Settings")
     TRADE_VALUE = st.number_input("Trade Capital per Stock (Rs)", value=3000, step=500)
@@ -374,7 +372,7 @@ if not SELECTED_STOCKS:
     st.stop()
 
 # Run Live Execution
-process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
 
 # =============================================================================
 # UI DISPLAY TABS
@@ -413,7 +411,7 @@ def render_live_tab(strategy_mode, title):
         st.info("Aaj ke liye koi trade execution nahi mila.")
         return
 
-    col_order = ["Sr", "Date", "EntryTime", "ExitTime", "Symbol", "Type", "Qty", "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status", "GrossPnL", "Charges", "NetPnL"]
+    col_order = ["Sr", "Date", "EntryTime", "ExitTime", "Symbol", "Type", "Qty", "EntryPrice", "Target", "SL", "CurrentPrice", "ExitPrice", "Status", "GrossPnL", "Charges", "NetPnL"]
     
     st.markdown("#### 🟢 Active Positions")
     active_df = mode_df[mode_df["Status"] == "LIVE"]
@@ -447,8 +445,8 @@ with tab3:
                 sym_clean = sym.replace(".NS", "")
                 df_sym = bt_data[sym].dropna(how="all") if len(SELECTED_STOCKS) > 1 else bt_data
                 
-                n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
-                r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
                 
                 norm_list.extend(n_tr)
                 rev_list.extend(r_tr)
