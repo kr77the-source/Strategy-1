@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 
 # =============================================================================
@@ -126,20 +125,21 @@ def apply_slippage(price, side, bps=5.0):
     b = float(bps) / 10000.0
     return p * (1 + b) if side == "BUY" else p * (1 - b)
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_data(stocks_list, period_str, tf_mins):
     tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
     try:
-        return yf.download(
-            tickers=" ".join(stocks_list),
+        data = yf.download(
+            tickers=stocks_list,
             period=period_str,
             interval=tf_str,
             group_by="ticker",
-            threads=True,
+            threads=False,
             progress=False
         )
+        return data
     except Exception:
-        return {}
+        return None
 
 # =============================================================================
 # UNIFIED SIMULATION ENGINE
@@ -287,19 +287,33 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
     return trades
 
 # =============================================================================
-# PROCESS TODAY'S LIVE TRADES
+# SAFE DATA EXTRACTION & LIVE ENGINE
 # =============================================================================
 def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps):
     raw_data = fetch_data(selected_stocks, "5d", tf_mins)
-    if raw_data is None or (isinstance(raw_data, dict) and not raw_data):
+    if raw_data is None or raw_data.empty:
         return
 
     all_live_trades = []
     
     for symbol in selected_stocks:
         symbol_clean = symbol.replace(".NS", "")
-        df = raw_data[symbol].dropna(how="all") if len(selected_stocks) > 1 else raw_data
         
+        # Crash-Proof DataFrame Extraction
+        try:
+            if isinstance(raw_data.columns, pd.MultiIndex):
+                if symbol in raw_data.columns.levels[0]:
+                    df = raw_data[symbol].dropna(how="all")
+                else:
+                    continue
+            else:
+                df = raw_data.dropna(how="all")
+        except Exception:
+            continue
+
+        if df.empty or len(df) < 10:
+            continue
+
         norm_trades = run_simulation(df, symbol_clean, "Normal", "BUY", fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps)
         rev_trades = run_simulation(df, symbol_clean, "Reversal", "SELL", fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps)
         
@@ -355,7 +369,10 @@ with st.sidebar:
     SLIPPAGE_BPS = st.number_input("Slippage (BPS)", value=5.0, step=1.0)
 
     st.markdown("---")
-    AUTO_REFRESH = st.checkbox("🔄 Auto-Refresh Live P&L (15 sec)", value=True)
+
+    if st.button("🔄 Manual Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
 
     if st.button("🗑️ Reset History DB"):
         if os.path.exists(HISTORY_FILE):
@@ -367,8 +384,11 @@ if not SELECTED_STOCKS:
     st.warning("⚠️ Kam se kam 1 share select karein.")
     st.stop()
 
-# Run Live Execution
-process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+# Safe execution wrapper
+try:
+    process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+except Exception as e:
+    st.error(f"Live engine error: {str(e)}")
 
 # =============================================================================
 # UI DISPLAY TABS
@@ -437,15 +457,22 @@ with tab3:
             bt_data = fetch_data(SELECTED_STOCKS, "60d", TIMEFRAME_MINS)
             norm_list, rev_list = [], []
             
-            for sym in SELECTED_STOCKS:
-                sym_clean = sym.replace(".NS", "")
-                df_sym = bt_data[sym].dropna(how="all") if len(SELECTED_STOCKS) > 1 else bt_data
-                
-                n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
-                r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
-                
-                norm_list.extend(n_tr)
-                rev_list.extend(r_tr)
+            if bt_data is not None and not bt_data.empty:
+                for sym in SELECTED_STOCKS:
+                    sym_clean = sym.replace(".NS", "")
+                    try:
+                        if isinstance(bt_data.columns, pd.MultiIndex):
+                            df_sym = bt_data[sym].dropna(how="all") if sym in bt_data.columns.levels[0] else None
+                        else:
+                            df_sym = bt_data.dropna(how="all")
+                    except Exception:
+                        df_sym = None
+
+                    if df_sym is not None and not df_sym.empty:
+                        n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                        r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                        norm_list.extend(n_tr)
+                        rev_list.extend(r_tr)
                 
             st.session_state.norm_bt = pd.DataFrame(norm_list)
             st.session_state.rev_bt = pd.DataFrame(rev_list)
@@ -508,17 +535,3 @@ with tab3:
     st.markdown("### 🗄️ Today's Master Database")
     db_df = load_db()
     st.dataframe(db_df, use_container_width=True, hide_index=True)
-
-# Non-blocking Browser-level Auto Refresh
-if AUTO_REFRESH:
-    components.html(
-        """
-        <script>
-            setTimeout(function(){
-                window.parent.location.reload();
-            }, 15000);
-        </script>
-        """,
-        height=0,
-        width=0
-    )
