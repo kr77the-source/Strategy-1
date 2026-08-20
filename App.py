@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -9,7 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 # =============================================================================
-# PAGE CONFIG & STYLES (MUST BE FIRST STREAMLIT COMMAND)
+# PAGE CONFIG & STYLES
 # =============================================================================
 st.set_page_config(page_title="EMA Intraday Live Terminal & Backtest", layout="wide")
 
@@ -66,20 +66,6 @@ def save_db(df):
     except Exception:
         pass
 
-def upsert_trade_to_db(trade_data: dict):
-    df = load_db()
-    tid = str(trade_data["TradeID"])
-    if not df.empty and tid in df["TradeID"].astype(str).values:
-        idx = df.index[df["TradeID"].astype(str) == tid][0]
-        for key, val in trade_data.items():
-            if key in df.columns:
-                df.at[idx, key] = val
-    else:
-        trade_data = {c: trade_data.get(c, "-") for c in HISTORY_COLUMNS}
-        trade_data["Sr"] = len(df) + 1
-        df = pd.concat([df, pd.DataFrame([trade_data])], ignore_index=True)
-    save_db(df)
-
 # =============================================================================
 # INDICATORS & MATHS
 # =============================================================================
@@ -112,9 +98,6 @@ def signal_at(df, i):
         return False, False
     return (fp <= sp and fc > sc), (fp >= sp and fc < sc)
 
-# =============================================================================
-# CHARGES & SLIPPAGE
-# =============================================================================
 def estimate_charges(entry_price, exit_price, qty):
     buy_turnover = float(entry_price) * int(qty)
     sell_turnover = float(exit_price) * int(qty)
@@ -132,258 +115,180 @@ def apply_slippage(price, side, bps=5.0):
     b = float(bps) / 10000.0
     return p * (1 + b) if side == "BUY" else p * (1 - b)
 
-# =============================================================================
-# DATA FETCHING
-# =============================================================================
-@st.cache_data(ttl=10, show_spinner=False)
-def fetch_market_data(stocks_list, tf_mins):
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_data(stocks_list, period_str, tf_mins):
     tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
     try:
-        data = yf.download(
+        return yf.download(
             tickers=" ".join(stocks_list),
-            period="5d",
+            period=period_str,
             interval=tf_str,
             group_by="ticker",
             threads=True,
             progress=False
         )
-        return data
     except Exception:
         return {}
 
-def should_squareoff(now):
-    return now.time() >= dt_time(15, 25)
+# =============================================================================
+# UNIFIED SIMULATION ENGINE (SHARED BY LIVE & BACKTEST)
+# =============================================================================
+def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_val, leverage, slippage_bps):
+    if df is None or len(df) < slow_len + 5:
+        return []
+
+    df = add_indicators(df, fast_len, slow_len, atr_len)
+    buying_power = float(trade_val) * float(leverage)
+    trades = []
+    open_trade = None
+
+    for i in range(slow_len + 1, len(df)):
+        current_dt = df.index[i]
+        c_time = current_dt.time()
+        
+        # Determine if next bar exists or if candle is end of day
+        is_last_candle_of_day = False
+        if i + 1 < len(df):
+            next_dt = df.index[i + 1]
+            if next_dt.date() != current_dt.date() or c_time >= dt_time(15, 15):
+                is_last_candle_of_day = True
+        else:
+            if c_time >= dt_time(15, 15):
+                is_last_candle_of_day = True
+
+        # Check Exits for active trade
+        if open_trade is not None:
+            hi, lo, close = float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
+            exit_price, reason, exit_time_str = None, None, None
+
+            if side == "BUY" and use_atr and lo <= open_trade["SL"]:
+                exit_price, reason = open_trade["SL"], "SL_HIT"
+                exit_time_str = current_dt.strftime("%H:%M:%S")
+            elif side == "SELL" and use_atr and hi >= open_trade["SL"]:
+                exit_price, reason = open_trade["SL"], "SL_HIT"
+                exit_time_str = current_dt.strftime("%H:%M:%S")
+            elif is_last_candle_of_day:
+                exit_price = apply_slippage(close, "SELL" if side == "BUY" else "BUY", slippage_bps)
+                reason = "EOD_SQUAREOFF"
+                exit_time_str = "15:25:00"
+            else:
+                ns, rs = signal_at(df, i)
+                if (side == "BUY" and rs) or (side == "SELL" and ns):
+                    exit_price = apply_slippage(float(df["Open"].iloc[i]), "SELL" if side == "BUY" else "BUY", slippage_bps)
+                    reason = "OPPOSITE_SIGNAL"
+                    exit_time_str = current_dt.strftime("%H:%M:%S")
+
+            if exit_price is not None:
+                entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
+                gross = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
+                chg = estimate_charges(entry, exit_price, qty)
+                
+                trades.append({
+                    "TradeID": open_trade["TradeID"],
+                    "Date": open_trade["Date"],
+                    "EntryTime": open_trade["EntryTime"],
+                    "ExitTime": exit_time_str,
+                    "Symbol": symbol_clean,
+                    "StrategyMode": mode,
+                    "Type": side,
+                    "Qty": qty,
+                    "EntryPrice": round(entry, 2),
+                    "CurrentPrice": round(exit_price, 2),
+                    "ExitPrice": round(exit_price, 2),
+                    "SL": round(open_trade["SL"], 2),
+                    "Status": f"CLOSED ({reason})",
+                    "GrossPnL": round(gross, 2),
+                    "Charges": chg,
+                    "NetPnL": round(gross - chg, 2),
+                    "EntryReason": "EMA_CROSSOVER",
+                    "ExitReason": reason
+                })
+                open_trade = None
+                continue
+
+        # Check Entries
+        if c_time < dt_time(15, 0) and not is_last_candle_of_day:
+            ns, rs = signal_at(df, i)
+            trigger = ns if side == "BUY" else rs
+            if trigger and open_trade is None and i + 1 < len(df):
+                entry_dt = df.index[i + 1]
+                entry_raw = float(df["Open"].iloc[i + 1])
+                entry = apply_slippage(entry_raw, side, slippage_bps)
+                atr = float(df["ATR"].iloc[i])
+                sl = (entry - atr_mult * atr) if side == "BUY" else (entry + atr_mult * atr)
+                qty = max(1, int(buying_power / max(entry, 0.01)))
+                
+                open_trade = {
+                    "TradeID": f"{mode[0]}_{entry_dt.strftime('%Y%m%d%H%M')}_{symbol_clean}",
+                    "Date": entry_dt.strftime("%Y-%m-%d"),
+                    "EntryTime": entry_dt.strftime("%H:%M:%S"),
+                    "EntryPrice": entry,
+                    "SL": sl,
+                    "Qty": qty
+                }
+
+    # If position is still open right now in live market
+    if open_trade is not None:
+        latest_close = float(df["Close"].iloc[-1])
+        entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
+        gross = (latest_close - entry) * qty if side == "BUY" else (entry - latest_close) * qty
+        chg = estimate_charges(entry, latest_close, qty)
+        
+        trades.append({
+            "TradeID": open_trade["TradeID"],
+            "Date": open_trade["Date"],
+            "EntryTime": open_trade["EntryTime"],
+            "ExitTime": "-",
+            "Symbol": symbol_clean,
+            "StrategyMode": mode,
+            "Type": side,
+            "Qty": qty,
+            "EntryPrice": round(entry, 2),
+            "CurrentPrice": round(latest_close, 2),
+            "ExitPrice": "-",
+            "SL": round(open_trade["SL"], 2),
+            "Status": "LIVE",
+            "GrossPnL": round(gross, 2),
+            "Charges": chg,
+            "NetPnL": round(gross - chg, 2),
+            "EntryReason": "EMA_CROSSOVER",
+            "ExitReason": "-"
+        })
+
+    return trades
 
 # =============================================================================
-# LIVE PROCESSOR ENGINE (WITH CATCH-UP & STRICT 15:25 EOD CAP)
+# PROCESS TODAY'S LIVE TRADES
 # =============================================================================
-def process_live(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps):
-    now = datetime.now(IST)
-    data = fetch_market_data(selected_stocks, tf_mins)
-    if data is None or (isinstance(data, dict) and not data):
+def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps):
+    raw_data = fetch_data(selected_stocks, "5d", tf_mins)
+    if raw_data is None or (isinstance(raw_data, dict) and not raw_data):
         return
 
-    buying_power = float(trade_capital) * float(leverage)
-    db = load_db()
-
-    if "processed_keys" not in st.session_state:
-        st.session_state.processed_keys = set()
-
+    all_live_trades = []
+    
     for symbol in selected_stocks:
-        try:
-            df = data[symbol].dropna(how="all") if len(selected_stocks) > 1 else data
-            if df is None or len(df) < slow_len + 2:
-                continue
+        symbol_clean = symbol.replace(".NS", "")
+        df = raw_data[symbol].dropna(how="all") if len(selected_stocks) > 1 else raw_data
+        
+        # Run Simulation for Normal (BUY)
+        norm_trades = run_simulation(df, symbol_clean, "Normal", "BUY", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
+        # Run Simulation for Reversal (SELL)
+        rev_trades = run_simulation(df, symbol_clean, "Reversal", "SELL", fast_len, slow_len, atr_len, atr_mult, use_atr, trade_capital, leverage, slippage_bps)
+        
+        all_live_trades.extend(norm_trades)
+        all_live_trades.extend(rev_trades)
 
-            ind = add_indicators(df, fast_len, slow_len, atr_len)
-            symbol_clean = symbol.replace(".NS", "")
-
-            # 1. Historical Catch-up Scan for Today
-            for i in range(slow_len + 1, len(ind)):
-                candle_dt = ind.index[i]
-                candle_key = f"{symbol}_{candle_dt.isoformat()}"
-                c_time = candle_dt.time()
-
-                norm_signal, rev_signal = signal_at(ind, i)
-                atr_val = float(ind["ATR"].iloc[i])
-                ltp = float(ind["Close"].iloc[i])
-
-                if candle_key not in st.session_state.processed_keys and c_time < dt_time(15, 0):
-                    st.session_state.processed_keys.add(candle_key)
-
-                    if norm_signal and db[(db["Symbol"] == symbol_clean) & (db["StrategyMode"] == "Normal") & (db["Status"] == "LIVE")].empty:
-                        entry_p = apply_slippage(ltp, "BUY", slippage_bps)
-                        qty = max(1, int(buying_power / max(entry_p, 0.01)))
-                        sl_p = entry_p - (atr_mult * atr_val) if use_atr and not np.isnan(atr_val) else entry_p * 0.95
-                        
-                        upsert_trade_to_db({
-                            "TradeID": f"N_{candle_dt.strftime('%Y%m%d%H%M')}_{symbol_clean}",
-                            "Date": candle_dt.strftime("%Y-%m-%d"),
-                            "EntryTime": candle_dt.strftime("%H:%M:%S"),
-                            "ExitTime": "-",
-                            "Symbol": symbol_clean,
-                            "StrategyMode": "Normal",
-                            "Type": "BUY",
-                            "Qty": qty,
-                            "EntryPrice": round(entry_p, 2),
-                            "CurrentPrice": round(entry_p, 2),
-                            "ExitPrice": "-",
-                            "SL": round(sl_p, 2),
-                            "Status": "LIVE",
-                            "GrossPnL": 0.0,
-                            "Charges": 0.0,
-                            "NetPnL": 0.0,
-                            "EntryReason": "EMA_CROSSOVER_BUY",
-                            "ExitReason": "-"
-                        })
-
-                    if rev_signal and db[(db["Symbol"] == symbol_clean) & (db["StrategyMode"] == "Reversal") & (db["Status"] == "LIVE")].empty:
-                        entry_p = apply_slippage(ltp, "SELL", slippage_bps)
-                        qty = max(1, int(buying_power / max(entry_p, 0.01)))
-                        sl_p = entry_p + (atr_mult * atr_val) if use_atr and not np.isnan(atr_val) else entry_p * 1.05
-                        
-                        upsert_trade_to_db({
-                            "TradeID": f"R_{candle_dt.strftime('%Y%m%d%H%M')}_{symbol_clean}",
-                            "Date": candle_dt.strftime("%Y-%m-%d"),
-                            "EntryTime": candle_dt.strftime("%H:%M:%S"),
-                            "ExitTime": "-",
-                            "Symbol": symbol_clean,
-                            "StrategyMode": "Reversal",
-                            "Type": "SELL",
-                            "Qty": qty,
-                            "EntryPrice": round(entry_p, 2),
-                            "CurrentPrice": round(entry_p, 2),
-                            "ExitPrice": "-",
-                            "SL": round(sl_p, 2),
-                            "Status": "LIVE",
-                            "GrossPnL": 0.0,
-                            "Charges": 0.0,
-                            "NetPnL": 0.0,
-                            "EntryReason": "EMA_CROSSOVER_SELL",
-                            "ExitReason": "-"
-                        })
-
-            # 2. Position Management & Exit Handling
-            active_trades = db[(db["Symbol"] == symbol_clean) & (db["Status"] == "LIVE")]
-            latest_ltp = float(ind["Close"].iloc[-1])
-
-            for _, row in active_trades.iterrows():
-                side = row["Type"]
-                entry_p = float(row["EntryPrice"])
-                qty = int(row["Qty"])
-                sl_p = float(row["SL"])
-
-                gross = (latest_ltp - entry_p) * qty if side == "BUY" else (entry_p - latest_ltp) * qty
-                charges = estimate_charges(entry_p, latest_ltp, qty)
-                updated = dict(row)
-                updated["CurrentPrice"] = round(latest_ltp, 2)
-                updated["GrossPnL"] = round(gross, 2)
-                updated["Charges"] = round(charges, 2)
-                updated["NetPnL"] = round(gross - charges, 2)
-
-                hit_sl = (side == "BUY" and latest_ltp <= sl_p) or (side == "SELL" and latest_ltp >= sl_p)
-                is_eod = should_squareoff(now)
-
-                if hit_sl or is_eod:
-                    exit_p = apply_slippage(latest_ltp, "SELL" if side == "BUY" else "BUY", slippage_bps)
-                    gross_final = (exit_p - entry_p) * qty if side == "BUY" else (entry_p - exit_p) * qty
-                    charges_final = estimate_charges(entry_p, exit_p, qty)
-
-                    reason = "SL_HIT" if hit_sl else "EOD_SQUAREOFF"
-                    
-                    # Strictly Cap Exit Time to 15:25:00 if checked post market hours
-                    exit_time_str = "15:25:00" if (is_eod and now.time() >= dt_time(15, 25)) else now.strftime("%H:%M:%S")
-
-                    updated.update({
-                        "ExitPrice": round(exit_p, 2),
-                        "ExitTime": exit_time_str,
-                        "Status": f"CLOSED ({reason})",
-                        "GrossPnL": round(gross_final, 2),
-                        "Charges": charges_final,
-                        "NetPnL": round(gross_final - charges_final, 2),
-                        "ExitReason": reason
-                    })
-                upsert_trade_to_db(updated)
-
-        except Exception:
-            continue
-
-# =============================================================================
-# BACKTEST ENGINE (60 DAYS)
-# =============================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def run_60d_backtest(stocks_list, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_val, leverage, tf_mins, slippage_bps):
-    tf_str = "1h" if tf_mins == 60 else f"{tf_mins}m"
-    try:
-        data = yf.download(tickers=" ".join(stocks_list), period="60d", interval=tf_str, group_by="ticker", threads=True, progress=False)
-    except Exception:
-        return pd.DataFrame(), pd.DataFrame()
-
-    norm_list, rev_list = [], []
-    buying_power = float(trade_val) * float(leverage)
-
-    for symbol in stocks_list:
-        try:
-            df = data[symbol].dropna(how="all") if len(stocks_list) > 1 else data
-            if df is None or len(df) < slow_len + 10:
-                continue
-
-            df = add_indicators(df, fast_len, slow_len, atr_len)
-
-            for mode, side, out_list in [("Normal", "BUY", norm_list), ("Reversal", "SELL", rev_list)]:
-                open_trade = None
-                for i in range(slow_len + 1, len(df) - 1):
-                    current_dt = df.index[i]
-                    next_dt = df.index[i + 1]
-                    c_time = current_dt.time()
-                    
-                    is_last_candle_of_day = (next_dt.date() != current_dt.date()) or (c_time >= dt_time(15, 15))
-
-                    if open_trade is not None:
-                        hi, lo, close = float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
-                        ts = current_dt
-                        exit_price, reason = None, None
-
-                        if side == "BUY" and use_atr and lo <= open_trade["SL"]:
-                            exit_price, reason = open_trade["SL"], "ATR_SL"
-                        elif side == "SELL" and use_atr and hi >= open_trade["SL"]:
-                            exit_price, reason = open_trade["SL"], "ATR_SL"
-                        elif is_last_candle_of_day:
-                            exit_price = apply_slippage(close, "SELL" if side == "BUY" else "BUY", slippage_bps)
-                            reason = "EOD_SQUAREOFF"
-                        else:
-                            ns, rs = signal_at(df, i)
-                            if (side == "BUY" and rs) or (side == "SELL" and ns):
-                                exit_price = apply_slippage(float(df["Open"].iloc[i + 1]), "SELL" if side == "BUY" else "BUY", slippage_bps)
-                                reason = "OPPOSITE_SIGNAL"
-                                ts = df.index[i + 1]
-
-                        if exit_price is not None:
-                            entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
-                            gross = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-                            chg = estimate_charges(entry, exit_price, qty)
-                            out_list.append({
-                                "Date": open_trade["Date"], 
-                                "EntryTime": open_trade["EntryTime"], 
-                                "ExitTime": ts.strftime("%H:%M"),
-                                "Symbol": symbol.replace(".NS", ""), 
-                                "Type": side, 
-                                "Qty": qty,
-                                "EntryPrice": round(entry, 2), 
-                                "ExitPrice": round(exit_price, 2), 
-                                "SL": round(open_trade["SL"], 2),
-                                "GrossPnL": round(gross, 2), 
-                                "Charges": chg, 
-                                "NetPnL": round(gross - chg, 2), 
-                                "ExitReason": reason
-                            })
-                            open_trade = None
-                            continue
-
-                    if c_time < dt_time(15, 0) and not is_last_candle_of_day:
-                        ns, rs = signal_at(df, i)
-                        trigger = ns if side == "BUY" else rs
-                        if trigger and open_trade is None and i + 1 < len(df):
-                            entry_raw = float(df["Open"].iloc[i + 1])
-                            entry = apply_slippage(entry_raw, side, slippage_bps)
-                            atr = float(df["ATR"].iloc[i])
-                            sl = (entry - atr_mult * atr) if side == "BUY" else (entry + atr_mult * atr)
-                            qty = max(1, int(buying_power / max(entry, 0.01)))
-                            open_trade = {
-                                "Date": df.index[i + 1].strftime("%Y-%m-%d"), 
-                                "EntryTime": df.index[i + 1].strftime("%H:%M"), 
-                                "EntryPrice": entry, 
-                                "SL": sl, 
-                                "Qty": qty
-                            }
-
-        except Exception:
-            continue
-
-    norm, rev = pd.DataFrame(norm_list), pd.DataFrame(rev_list)
-    if not norm.empty: norm.insert(0, "Sr", range(1, len(norm) + 1))
-    if not rev.empty: rev.insert(0, "Sr", range(1, len(rev) + 1))
-    return norm, rev
+    if all_live_trades:
+        df_new = pd.DataFrame(all_live_trades)
+        
+        # Filter for today's trades only for live view
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        df_today = df_new[df_new["Date"] == today_str].copy()
+        
+        if not df_today.empty:
+            df_today.insert(1, "Sr", range(1, len(df_today) + 1))
+            save_db(df_today)
 
 # =============================================================================
 # SIDEBAR CONTROLS
@@ -429,7 +334,6 @@ with st.sidebar:
     if st.button("🗑️ Reset History DB"):
         if os.path.exists(HISTORY_FILE):
             os.remove(HISTORY_FILE)
-        st.session_state.processed_keys = set()
         st.success("History database reset ho gaya!")
         st.rerun()
 
@@ -437,8 +341,8 @@ if not SELECTED_STOCKS:
     st.warning("⚠️ Kam se kam 1 share select karein.")
     st.stop()
 
-# Run Live Signal Engine
-process_live(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+# Run Live Execution
+process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
 
 # =============================================================================
 # UI DISPLAY TABS
@@ -465,7 +369,7 @@ def render_live_tab(strategy_mode, title):
     st.markdown(f"""
         <div class="top-pnl-card">
             <div style="display: flex; justify-content: space-around; text-align: center;">
-                <div><span style="font-size: 12px; color: #8b949e;">TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{total_trades}</span></div>
+                <div><span style="font-size: 12px; color: #8b949e;">TRADES TODAY</span><br><span style="font-size: 18px; font-weight: bold;">{total_trades}</span></div>
                 <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{tot_gross:.2f}</span></div>
                 <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_charges:.2f}</span></div>
                 <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
@@ -474,14 +378,24 @@ def render_live_tab(strategy_mode, title):
     """, unsafe_allow_html=True)
 
     if mode_df.empty:
-        st.info("Koi active ya closed trade record nahi mila.")
+        st.info("Aaj ke liye koi trade execution nahi mila.")
         return
 
     col_order = ["Sr", "Date", "EntryTime", "ExitTime", "Symbol", "Type", "Qty", "EntryPrice", "CurrentPrice", "ExitPrice", "SL", "Status", "GrossPnL", "Charges", "NetPnL"]
+    
     st.markdown("#### 🟢 Active Positions")
-    st.dataframe(mode_df[mode_df["Status"] == "LIVE"][col_order], use_container_width=True, hide_index=True)
-    st.markdown("#### 🗄️ Closed Trades")
-    st.dataframe(mode_df[mode_df["Status"] != "LIVE"][col_order], use_container_width=True, hide_index=True)
+    active_df = mode_df[mode_df["Status"] == "LIVE"]
+    if not active_df.empty:
+        st.dataframe(active_df[col_order], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Koi active position nahi hai.")
+
+    st.markdown("#### 🗄️ Closed Trades Today")
+    closed_df = mode_df[mode_df["Status"] != "LIVE"]
+    if not closed_df.empty:
+        st.dataframe(closed_df[col_order], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Koi closed trade nahi hai.")
 
 with tab1:
     render_live_tab("Normal", "🟢 Live Normal Strategy Terminal")
@@ -490,68 +404,42 @@ with tab2:
     render_live_tab("Reversal", "🔴 Live Reversal Strategy Terminal")
 
 with tab3:
-    st.markdown("### 📊 Dual Backtest Engine & Database Logs")
+    st.markdown("### 📊 Dual 60-Day Backtest Engine")
     
     if st.button("▶️ Run 60-Day Backtest", type="primary"):
-        with st.spinner("Calculating 60-Day Historical Data via yfinance..."):
-            norm_bt, rev_bt = run_60d_backtest(
-                SELECTED_STOCKS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, 
-                ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, 
-                TIMEFRAME_MINS, SLIPPAGE_BPS
-            )
-            st.session_state.norm_bt = norm_bt
-            st.session_state.rev_bt = rev_bt
+        with st.spinner("Calculating 60-Day Historical Data..."):
+            bt_data = fetch_data(SELECTED_STOCKS, "60d", TIMEFRAME_MINS)
+            norm_list, rev_list = [], []
+            
+            for sym in SELECTED_STOCKS:
+                sym_clean = sym.replace(".NS", "")
+                df_sym = bt_data[sym].dropna(how="all") if len(SELECTED_STOCKS) > 1 else bt_data
+                
+                n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
+                
+                norm_list.extend(n_tr)
+                rev_list.extend(r_tr)
+                
+            st.session_state.norm_bt = pd.DataFrame(norm_list)
+            st.session_state.rev_bt = pd.DataFrame(rev_list)
 
     norm_bt = st.session_state.get("norm_bt")
     rev_bt = st.session_state.get("rev_bt")
 
     if norm_bt is not None and not norm_bt.empty:
-        st.markdown("#### 🟢 Normal Strategy Backtest Summary")
-        
-        t_trades = len(norm_bt)
-        t_gross = norm_bt["GrossPnL"].sum()
-        t_charges = norm_bt["Charges"].sum()
-        t_net = round(t_gross - t_charges, 2)
-        net_class = "metric-val-green" if t_net >= 0 else "metric-val-red"
-
-        st.markdown(f"""
-            <div class="top-pnl-card">
-                <div style="display: flex; justify-content: space-around; text-align: center;">
-                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{t_trades}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span style="font-size: 18px; font-weight: bold;">{RUPEE}{t_gross:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{t_charges:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{t_net:.2f}</span></div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        
+        st.markdown("#### 🟢 Normal Strategy 60-Day Backtest Results")
+        norm_bt.insert(0, "Sr", range(1, len(norm_bt) + 1))
         st.dataframe(norm_bt, use_container_width=True, hide_index=True)
 
     if rev_bt is not None and not rev_bt.empty:
         st.markdown("---")
-        st.markdown("#### 🔴 Reversal Strategy Backtest Summary")
-        
-        r_trades = len(rev_bt)
-        r_gross = rev_bt["GrossPnL"].sum()
-        r_charges = rev_bt["Charges"].sum()
-        r_net = round(r_gross - r_charges, 2)
-        r_net_class = "metric-val-green" if r_net >= 0 else "metric-val-red"
-
-        st.markdown(f"""
-            <div class="top-pnl-card">
-                <div style="display: flex; justify-content: space-around; text-align: center;">
-                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{r_trades}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span style="font-size: 18px; font-weight: bold;">{RUPEE}{r_gross:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{r_charges:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{r_net_class}">{RUPEE}{r_net:.2f}</span></div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        
+        st.markdown("#### 🔴 Reversal Strategy 60-Day Backtest Results")
+        rev_bt.insert(0, "Sr", range(1, len(rev_bt) + 1))
         st.dataframe(rev_bt, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.markdown("### 🗄️ All Live & Closed Trades Master Database")
+    st.markdown("### 🗄️ Today's Master Database")
     db_df = load_db()
     st.dataframe(db_df, use_container_width=True, hide_index=True)
 
