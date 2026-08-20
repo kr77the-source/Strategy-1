@@ -1,11 +1,11 @@
 import os
-import time
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 # =============================================================================
@@ -142,7 +142,7 @@ def fetch_data(stocks_list, period_str, tf_mins):
         return {}
 
 # =============================================================================
-# UNIFIED SIMULATION ENGINE WITH TARGET & SL
+# UNIFIED SIMULATION ENGINE
 # =============================================================================
 def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_val, leverage, slippage_bps):
     if df is None or len(df) < slow_len + 5:
@@ -175,26 +175,22 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
             hi, lo, close = float(df["High"].iloc[i]), float(df["Low"].iloc[i]), float(df["Close"].iloc[i])
             exit_price, reason, exit_time_str = None, None, None
 
-            # 1. Target Check
             if side == "BUY" and hi >= open_trade["Target"]:
                 exit_price, reason = open_trade["Target"], "TARGET_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
             elif side == "SELL" and lo <= open_trade["Target"]:
                 exit_price, reason = open_trade["Target"], "TARGET_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
-            # 2. Stop Loss Check
             elif side == "BUY" and use_atr and lo <= open_trade["SL"]:
                 exit_price, reason = open_trade["SL"], "SL_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
             elif side == "SELL" and use_atr and hi >= open_trade["SL"]:
                 exit_price, reason = open_trade["SL"], "SL_HIT"
                 exit_time_str = current_dt.strftime("%H:%M:%S")
-            # 3. EOD Squareoff
             elif is_last_candle_of_day:
                 exit_price = apply_slippage(close, "SELL" if side == "BUY" else "BUY", slippage_bps)
                 reason = "EOD_SQUAREOFF"
                 exit_time_str = "15:25:00"
-            # 4. Opposite Signal Exit
             else:
                 ns, rs = signal_at(df, i)
                 if (side == "BUY" and rs) or (side == "SELL" and ns):
@@ -513,6 +509,16 @@ with tab3:
     db_df = load_db()
     st.dataframe(db_df, use_container_width=True, hide_index=True)
 
+# Non-blocking Browser-level Auto Refresh
 if AUTO_REFRESH:
-    time.sleep(15)
-    st.rerun()
+    components.html(
+        """
+        <script>
+            setTimeout(function(){
+                window.parent.location.reload();
+            }, 15000);
+        </script>
+        """,
+        height=0,
+        width=0
+    )
