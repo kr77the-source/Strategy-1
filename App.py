@@ -15,18 +15,29 @@ st.set_page_config(page_title="EMA Intraday Live Terminal & Backtest", layout="w
 
 st.markdown("""
 <style>
-.block-container { padding-top: 2rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+.block-container { padding-top: 1.5rem !important; padding-bottom: 0rem !important; padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
 header[data-testid="stHeader"] { background: transparent; }
 .top-pnl-card {
     background: linear-gradient(135deg, #1e2530 0%, #161b22 100%);
     border: 1px solid #30363d;
     border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 15px;
+    padding: 10px;
+    margin-bottom: 12px;
     color: #ffffff;
 }
-.metric-val-green { color: #4CAF50; font-weight: bold; font-size: 18px; }
-.metric-val-red { color: #FF5252; font-weight: bold; font-size: 18px; }
+.pnl-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    text-align: center;
+}
+@media (min-width: 600px) {
+    .pnl-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+.metric-val-green { color: #4CAF50; font-weight: bold; font-size: 16px; }
+.metric-val-red { color: #FF5252; font-weight: bold; font-size: 16px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,7 +142,7 @@ def fetch_data(stocks_list, period_str, tf_mins):
         return {}
 
 # =============================================================================
-# UNIFIED SIMULATION ENGINE (SHARED BY LIVE & BACKTEST)
+# UNIFIED SIMULATION ENGINE
 # =============================================================================
 def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_val, leverage, slippage_bps):
     if df is None or len(df) < slow_len + 5:
@@ -340,9 +351,9 @@ process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, AT
 # UI DISPLAY TABS
 # =============================================================================
 tab1, tab2, tab3 = st.tabs([
-    "🟢 Live Normal Strategy",
-    "🔴 Live Reversal Strategy",
-    "📊 Backtest & Master DB"
+    "Normal",
+    "Reverse",
+    "Backest"
 ])
 
 def render_live_tab(strategy_mode, title):
@@ -360,11 +371,11 @@ def render_live_tab(strategy_mode, title):
 
     st.markdown(f"""
         <div class="top-pnl-card">
-            <div style="display: flex; justify-content: space-around; text-align: center;">
-                <div><span style="font-size: 12px; color: #8b949e;">TRADES TODAY</span><br><span style="font-size: 18px; font-weight: bold;">{total_trades}</span></div>
-                <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{tot_gross:.2f}</span></div>
-                <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_charges:.2f}</span></div>
-                <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
+            <div class="pnl-grid">
+                <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{total_trades}</span></div>
+                <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{tot_gross:.2f}</span></div>
+                <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_charges:.2f}</span></div>
+                <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -393,7 +404,7 @@ with tab1:
     render_live_tab("Normal", "🟢 Live Normal Strategy Terminal")
 
 with tab2:
-    render_live_tab("Reversal", "🔴 Live Reversal Strategy Terminal")
+    render_live_tab("Reversal", "🔴 Live Reverse Strategy Terminal")
 
 with tab3:
     st.markdown("### 📊 Dual 60-Day Backtest Engine")
@@ -422,7 +433,6 @@ with tab3:
     if norm_bt is not None and not norm_bt.empty:
         st.markdown("#### 🟢 Normal Strategy 60-Day Backtest Results")
         
-        # P&L Summary Dashboard wapas add kar diya
         t_trades = len(norm_bt)
         t_gross = norm_bt["GrossPnL"].astype(float).sum()
         t_charges = norm_bt["Charges"].astype(float).sum()
@@ -432,11 +442,11 @@ with tab3:
 
         st.markdown(f"""
             <div class="top-pnl-card">
-                <div style="display: flex; justify-content: space-around; text-align: center;">
-                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{t_trades}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{t_gross:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{t_charges:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{t_net:.2f}</span></div>
+                <div class="pnl-grid">
+                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{t_trades}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{t_gross:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{t_charges:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{t_net:.2f}</span></div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -447,9 +457,8 @@ with tab3:
 
     if rev_bt is not None and not rev_bt.empty:
         st.markdown("---")
-        st.markdown("#### 🔴 Reversal Strategy 60-Day Backtest Results")
+        st.markdown("#### 🔴 Reverse Strategy 60-Day Backtest Results")
         
-        # P&L Summary Dashboard wapas add kar diya
         r_trades = len(rev_bt)
         r_gross = rev_bt["GrossPnL"].astype(float).sum()
         r_charges = rev_bt["Charges"].astype(float).sum()
@@ -459,11 +468,11 @@ with tab3:
 
         st.markdown(f"""
             <div class="top-pnl-card">
-                <div style="display: flex; justify-content: space-around; text-align: center;">
-                    <div><span style="font-size: 12px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 18px; font-weight: bold;">{r_trades}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">GROSS P&L</span><br><span class="{r_gross_class}">{RUPEE}{r_gross:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">CHARGES</span><br><span style="font-size: 18px; font-weight: bold; color: #e3b341;">{RUPEE}{r_charges:.2f}</span></div>
-                    <div><span style="font-size: 12px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{r_net_class}">{RUPEE}{r_net:.2f}</span></div>
+                <div class="pnl-grid">
+                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{r_trades}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{r_gross_class}">{RUPEE}{r_gross:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{r_charges:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{r_net_class}">{RUPEE}{r_net:.2f}</span></div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
