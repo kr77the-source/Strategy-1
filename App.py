@@ -142,7 +142,7 @@ def fetch_data(stocks_list, period_str, tf_mins):
         return {}
 
 # =============================================================================
-# UNIFIED SIMULATION ENGINE
+# UNIFIED SIMULATION ENGINE (STRICT MARKET TIME CHECK)
 # =============================================================================
 def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, use_atr, trade_val, leverage, slippage_bps):
     if df is None or len(df) < slow_len + 5:
@@ -153,17 +153,22 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
     trades = []
     open_trade = None
 
+    now_ist = datetime.now(IST)
+    is_market_closed_now = now_ist.time() >= dt_time(15, 30) or now_ist.weekday() >= 5
+    today_str = now_ist.strftime("%Y-%m-%d")
+
     for i in range(slow_len + 1, len(df)):
         current_dt = df.index[i]
         c_time = current_dt.time()
+        c_date_str = current_dt.strftime("%Y-%m-%d")
         
         is_last_candle_of_day = False
         if i + 1 < len(df):
             next_dt = df.index[i + 1]
-            if next_dt.date() != current_dt.date() or c_time >= dt_time(15, 15):
+            if next_dt.date() != current_dt.date() or c_time >= dt_time(15, 0):
                 is_last_candle_of_day = True
         else:
-            if c_time >= dt_time(15, 15):
+            if is_market_closed_now or c_date_str < today_str or c_time >= dt_time(15, 0):
                 is_last_candle_of_day = True
 
         if open_trade is not None:
@@ -235,32 +240,56 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                     "Qty": qty
                 }
 
+    # Strict Check: If trade remains open after loop
     if open_trade is not None:
         latest_close = float(df["Close"].iloc[-1])
         entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
         gross = (latest_close - entry) * qty if side == "BUY" else (entry - latest_close) * qty
         chg = estimate_charges(entry, latest_close, qty)
         
-        trades.append({
-            "TradeID": open_trade["TradeID"],
-            "Date": open_trade["Date"],
-            "EntryTime": open_trade["EntryTime"],
-            "ExitTime": "-",
-            "Symbol": symbol_clean,
-            "StrategyMode": mode,
-            "Type": side,
-            "Qty": qty,
-            "EntryPrice": round(entry, 2),
-            "CurrentPrice": round(latest_close, 2),
-            "ExitPrice": "-",
-            "SL": round(open_trade["SL"], 2),
-            "Status": "LIVE",
-            "GrossPnL": round(gross, 2),
-            "Charges": chg,
-            "NetPnL": round(gross - chg, 2),
-            "EntryReason": "EMA_CROSSOVER",
-            "ExitReason": "-"
-        })
+        # If market is closed right now, force close it as EOD_SQUAREOFF
+        if is_market_closed_now or open_trade["Date"] < today_str:
+            trades.append({
+                "TradeID": open_trade["TradeID"],
+                "Date": open_trade["Date"],
+                "EntryTime": open_trade["EntryTime"],
+                "ExitTime": "15:25:00",
+                "Symbol": symbol_clean,
+                "StrategyMode": mode,
+                "Type": side,
+                "Qty": qty,
+                "EntryPrice": round(entry, 2),
+                "CurrentPrice": round(latest_close, 2),
+                "ExitPrice": round(latest_close, 2),
+                "SL": round(open_trade["SL"], 2),
+                "Status": "CLOSED (EOD_SQUAREOFF)",
+                "GrossPnL": round(gross, 2),
+                "Charges": chg,
+                "NetPnL": round(gross - chg, 2),
+                "EntryReason": "EMA_CROSSOVER",
+                "ExitReason": "EOD_SQUAREOFF"
+            })
+        else:
+            trades.append({
+                "TradeID": open_trade["TradeID"],
+                "Date": open_trade["Date"],
+                "EntryTime": open_trade["EntryTime"],
+                "ExitTime": "-",
+                "Symbol": symbol_clean,
+                "StrategyMode": mode,
+                "Type": side,
+                "Qty": qty,
+                "EntryPrice": round(entry, 2),
+                "CurrentPrice": round(latest_close, 2),
+                "ExitPrice": "-",
+                "SL": round(open_trade["SL"], 2),
+                "Status": "LIVE",
+                "GrossPnL": round(gross, 2),
+                "Charges": chg,
+                "NetPnL": round(gross - chg, 2),
+                "EntryReason": "EMA_CROSSOVER",
+                "ExitReason": "-"
+            })
 
     return trades
 
