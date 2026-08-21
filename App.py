@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
@@ -49,11 +50,47 @@ DEFAULT_STOCKS = [
 ]
 
 HISTORY_FILE = "strategy_history_db.csv"
+SETTINGS_FILE = "strategy_settings.json"
+
 HISTORY_COLUMNS = [
     "TradeID", "Sr", "Date", "EntryTime", "ExitTime", "Symbol", "StrategyMode",
     "Type", "Qty", "EntryPrice", "Target", "SL", "CurrentPrice", "ExitPrice", "Status",
     "GrossPnL", "Charges", "NetPnL", "EntryReason", "ExitReason"
 ]
+
+# =============================================================================
+# SETTINGS PERSISTENCE ENGINE
+# =============================================================================
+def load_settings():
+    defaults = {
+        "fast_ma_len": 20,
+        "slow_ma_len": 50,
+        "use_atr_stop": True,
+        "atr_len": 14,
+        "atr_mult": 3.0,
+        "target_rr": 2.0,
+        "trade_value": 3000,
+        "leverage": 5,
+        "timeframe_mins": 15,
+        "slippage_bps": 5.0,
+        "watchlist": DEFAULT_STOCKS.copy()
+    }
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                defaults.update(saved)
+        except Exception:
+            pass
+    return defaults
+
+def save_settings_to_file(settings_dict):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings_dict, f, indent=4)
+        return True
+    except Exception:
+        return False
 
 # =============================================================================
 # STORAGE ENGINE
@@ -287,7 +324,7 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
     return trades
 
 # =============================================================================
-# SAFE DATA EXTRACTION & LIVE ENGINE
+# LIVE PROCESSOR
 # =============================================================================
 def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_capital, leverage, slippage_bps):
     raw_data = fetch_data(selected_stocks, "5d", tf_mins)
@@ -299,7 +336,6 @@ def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, at
     for symbol in selected_stocks:
         symbol_clean = symbol.replace(".NS", "")
         
-        # Crash-Proof DataFrame Extraction
         try:
             if isinstance(raw_data.columns, pd.MultiIndex):
                 if symbol in raw_data.columns.levels[0]:
@@ -330,11 +366,16 @@ def process_live_today(selected_stocks, tf_mins, fast_len, slow_len, atr_len, at
             save_db(df_today)
 
 # =============================================================================
+# LOAD SAVED SETTINGS & INITIALIZE
+# =============================================================================
+SAVED_CFG = load_settings()
+
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = SAVED_CFG.get("watchlist", DEFAULT_STOCKS.copy())
+
+# =============================================================================
 # SIDEBAR CONTROLS
 # =============================================================================
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = DEFAULT_STOCKS.copy()
-
 with st.sidebar:
     st.header("🔍 Dynamic Share Selection")
     new_stock = st.text_input("Add Custom NSE Ticker (e.g. ZOMATO):", "").strip().upper()
@@ -349,26 +390,51 @@ with st.sidebar:
     SELECTED_STOCKS = st.multiselect(
         "Active Watchlist (Max 10):",
         options=st.session_state.watchlist,
-        default=st.session_state.watchlist[:5],
+        default=[s for s in st.session_state.watchlist if s in st.session_state.watchlist][:5],
         max_selections=10
     )
 
     st.markdown("---")
     st.header("⚙️ Strategy Parameters")
-    FAST_MA_LEN = st.number_input("Fast EMA Length", value=20, step=5)
-    SLOW_MA_LEN = st.number_input("Slow EMA Length", value=50, step=5)
-    USE_ATR_STOP = st.checkbox("Use ATR Stop Loss", value=True)
-    ATR_LEN = st.number_input("ATR Length", value=14, step=1)
-    ATR_MULT = st.number_input("ATR Multiplier (SL)", value=3.0, step=0.5)
-    TARGET_RR = st.number_input("Target Risk:Reward (1:X)", value=2.0, step=0.5)
+    FAST_MA_LEN = st.number_input("Fast EMA Length", value=int(SAVED_CFG.get("fast_ma_len", 20)), step=5)
+    SLOW_MA_LEN = st.number_input("Slow EMA Length", value=int(SAVED_CFG.get("slow_ma_len", 50)), step=5)
+    USE_ATR_STOP = st.checkbox("Use ATR Stop Loss", value=bool(SAVED_CFG.get("use_atr_stop", True)))
+    ATR_LEN = st.number_input("ATR Length", value=int(SAVED_CFG.get("atr_len", 14)), step=1)
+    ATR_MULT = st.number_input("ATR Multiplier (SL)", value=float(SAVED_CFG.get("atr_mult", 3.0)), step=0.5)
+    TARGET_RR = st.number_input("Target Risk:Reward (1:X)", value=float(SAVED_CFG.get("target_rr", 2.0)), step=0.5)
 
     st.subheader("💰 Execution & Margin Settings")
-    TRADE_VALUE = st.number_input("Trade Capital per Stock (Rs)", value=3000, step=500)
-    LEVERAGE = st.number_input("Intraday Margin Leverage (e.g. 5x)", value=5, min_value=1, max_value=20, step=1)
-    TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", [5, 15, 30, 60], index=1)
-    SLIPPAGE_BPS = st.number_input("Slippage (BPS)", value=5.0, step=1.0)
+    TRADE_VALUE = st.number_input("Trade Capital per Stock (Rs)", value=int(SAVED_CFG.get("trade_value", 3000)), step=500)
+    LEVERAGE = st.number_input("Intraday Margin Leverage (e.g. 5x)", value=int(SAVED_CFG.get("leverage", 5)), min_value=1, max_value=20, step=1)
+    
+    tf_options = [5, 15, 30, 60]
+    saved_tf = int(SAVED_CFG.get("timeframe_mins", 15))
+    tf_index = tf_options.index(saved_tf) if saved_tf in tf_options else 1
+    TIMEFRAME_MINS = st.selectbox("Candle Timeframe (Minutes)", tf_options, index=tf_index)
+    
+    SLIPPAGE_BPS = st.number_input("Slippage (BPS)", value=float(SAVED_CFG.get("slippage_bps", 5.0)), step=1.0)
 
     st.markdown("---")
+    
+    # 💾 SAVE SETTINGS BUTTON
+    if st.button("💾 Save Strategy Settings", type="primary"):
+        current_cfg = {
+            "fast_ma_len": FAST_MA_LEN,
+            "slow_ma_len": SLOW_MA_LEN,
+            "use_atr_stop": USE_ATR_STOP,
+            "atr_len": ATR_LEN,
+            "atr_mult": ATR_MULT,
+            "target_rr": TARGET_RR,
+            "trade_value": TRADE_VALUE,
+            "leverage": LEVERAGE,
+            "timeframe_mins": TIMEFRAME_MINS,
+            "slippage_bps": SLIPPAGE_BPS,
+            "watchlist": st.session_state.watchlist
+        }
+        if save_settings_to_file(current_cfg):
+            st.success("✅ Settings successfully saved!")
+        else:
+            st.error("❌ Failed to save settings!")
 
     if st.button("🔄 Manual Refresh Data"):
         st.cache_data.clear()
@@ -384,7 +450,7 @@ if not SELECTED_STOCKS:
     st.warning("⚠️ Kam se kam 1 share select karein.")
     st.stop()
 
-# Safe execution wrapper
+# Safe execution
 try:
     process_live_today(SELECTED_STOCKS, TIMEFRAME_MINS, FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
 except Exception as e:
