@@ -89,7 +89,7 @@ def save_settings_to_file(settings_dict):
         return False
 
 # =============================================================================
-# ACCURATE INDEX BACKTEST SIMULATOR
+# ACCURATE INDEX BACKTEST SIMULATOR (SL = 40%)
 # =============================================================================
 def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=None, slippage_pct=0.02):
     if allowed_days is None:
@@ -121,7 +121,7 @@ def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=No
         close_p = float(row["Close"])
         pct_move = (close_p - open_p) / open_p
 
-        # Non-trending day (<0.5% move) -> Filter out false triggers
+        # Filter out non-trending days (<0.5% move)
         if abs(pct_move) < 0.005:
             continue
 
@@ -129,18 +129,21 @@ def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=No
         
         entry_raw = 10.0 # Base Target Premium
         entry_price = entry_raw * (1 + slippage_pct) # Buy with 2% Slippage
-        sl_price = entry_price * 0.40 # 60% SL
+        
+        # Stop Loss updated to 40%
+        sl_pct = 0.40
+        sl_price = entry_price * (1 - sl_pct) # 40% SL Price
 
         if abs(pct_move) >= 0.012: # Strong Trend (>1.2% Move)
             exit_price = (entry_price * 1.80) * (1 - slippage_pct)
             reason = "TARGET_PROFIT"
         else:
             exit_price = sl_price * (1 - slippage_pct)
-            reason = "SL_HIT (60%)"
+            reason = "SL_HIT (40%)"
 
         margin_req = entry_price * total_qty
         gross = (exit_price - entry_price) * total_qty
-        charges = 43.0 * int(qty_multiplier) # Standard Option STT + Brokerage
+        charges = 43.0 * int(qty_multiplier) # Standard Option Charges
         net_pnl = gross - charges
 
         trades.append({
