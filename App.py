@@ -49,14 +49,7 @@ DEFAULT_STOCKS = [
     "BANDHANBNK.NS", "NMDC.NS", "RELIANCE.NS", "TCS.NS", "INFY.NS", "SBIN.NS"
 ]
 
-HISTORY_FILE = "strategy_history_db.csv"
 SETTINGS_FILE = "strategy_settings.json"
-
-HISTORY_COLUMNS = [
-    "TradeID", "Sr", "Date", "EntryTime", "ExitTime", "Symbol", "StrategyMode",
-    "Type", "Qty", "EntryPrice", "Target", "SL", "CurrentPrice", "ExitPrice", "Status",
-    "GrossPnL", "Charges", "NetPnL", "EntryReason", "ExitReason"
-]
 
 # =============================================================================
 # SETTINGS PERSISTENCE ENGINE (LOAD & SAVE)
@@ -74,9 +67,12 @@ def load_settings():
         "timeframe_mins": 15,
         "slippage_pct": 2.0,
         "watchlist": DEFAULT_STOCKS.copy(),
-        "nifty_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "bnifty_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "finnifty_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        "NIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "BANKNIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "FINNIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "NIFTY_mult": 1,
+        "BANKNIFTY_mult": 1,
+        "FINNIFTY_mult": 1
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -89,8 +85,10 @@ def load_settings():
 
 def save_settings_to_file(settings_dict):
     try:
+        current = load_settings()
+        current.update(settings_dict)
         with open(SETTINGS_FILE, "w") as f:
-            json.dump(settings_dict, f, indent=4)
+            json.dump(current, f, indent=4)
         return True
     except Exception:
         return False
@@ -144,11 +142,11 @@ def run_index_1yr_backtest(index_symbol, qty_multiplier=1, allowed_days=None, sl
 
         for leg in ["CE", "PE"]:
             raw_trigger = target_premium * (1 + momentum_pct)
-            entry_price = raw_trigger * (1 + slippage_pct) # 2% Slippage Buy
+            entry_price = raw_trigger * (1 + slippage_pct)
             sl_price = entry_price * (1 - sl_pct)
 
             if pct_change < 0.008:
-                exit_price = sl_price * (1 - slippage_pct) # 2% Slippage Sell
+                exit_price = sl_price * (1 - slippage_pct)
                 reason = "SL_HIT (60%)"
             else:
                 exit_price = (entry_price * 1.8) * (1 - slippage_pct)
@@ -170,13 +168,16 @@ def run_index_1yr_backtest(index_symbol, qty_multiplier=1, allowed_days=None, sl
     return pd.DataFrame(trades)
 
 # =============================================================================
-# LOAD SAVED SETTINGS & INITIALIZE SIDEBAR
+# LOAD SAVED SETTINGS & INITIALIZE
 # =============================================================================
 SAVED_CFG = load_settings()
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = SAVED_CFG.get("watchlist", DEFAULT_STOCKS.copy())
 
+# =============================================================================
+# SIDEBAR SETTINGS
+# =============================================================================
 with st.sidebar:
     st.header("⚙️ Global Strategy Settings")
     
@@ -192,19 +193,18 @@ with st.sidebar:
 
     SELECTED_STOCKS = st.multiselect("Active Watchlist:", options=st.session_state.watchlist, default=st.session_state.watchlist[:5])
 
-    st.subheader("📊 EMA Stock Strategy Parameters")
+    st.subheader("📊 EMA Stock Parameters")
     FAST_MA_LEN = st.number_input("Fast EMA Length", value=int(SAVED_CFG.get("fast_ma_len", 20)))
     SLOW_MA_LEN = st.number_input("Slow EMA Length", value=int(SAVED_CFG.get("slow_ma_len", 50)))
     TRADE_VALUE = st.number_input("Trade Capital (Rs)", value=int(SAVED_CFG.get("trade_value", 3000)))
     LEVERAGE = st.number_input("Leverage (x)", value=int(SAVED_CFG.get("leverage", 5)))
 
-    st.subheader("🎯 Index Strategy Filters")
+    st.subheader("🎯 Index Strategy Slippage")
     SLIPPAGE_PCT = st.number_input("Index Slippage (%)", value=float(SAVED_CFG.get("slippage_pct", 2.0)), step=0.5) / 100.0
 
     st.markdown("---")
     
-    # SAVE BUTTON IMPLEMENTATION
-    if st.button("💾 SAVE SETTINGS", type="primary"):
+    if st.button("💾 SAVE SIDEBAR SETTINGS", type="primary"):
         current_cfg = {
             "fast_ma_len": FAST_MA_LEN, "slow_ma_len": SLOW_MA_LEN,
             "trade_value": TRADE_VALUE, "leverage": LEVERAGE,
@@ -212,12 +212,12 @@ with st.sidebar:
             "watchlist": st.session_state.watchlist
         }
         if save_settings_to_file(current_cfg):
-            st.success("✅ Settings Successfully Saved to File!")
+            st.success("✅ Sidebar Settings Saved!")
         else:
             st.error("❌ Save Failed!")
 
 # =============================================================================
-# MAIN INTERFACE TABS (COMBINED STOCKS + INDEX STRATEGIES)
+# MAIN INTERFACE TABS
 # =============================================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Normal Stock (EMA)",
@@ -238,17 +238,39 @@ with tab2:
 def render_index_tab(index_name):
     st.markdown(f"### 🎯 LowMargin Hedge Execution Terminal — {index_name}")
     
-    st.markdown("#### 📅 Select Execution Days (Drawdown Optimization)")
-    days_selected = st.multiselect(
-        f"Trade Days for {index_name}:",
-        options=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        default=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        key=f"days_{index_name}"
-    )
+    saved_days = SAVED_CFG.get(f"{index_name}_days", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
+    saved_mult = int(SAVED_CFG.get(f"{index_name}_mult", 1))
 
-    qty_mult = st.selectbox("Lot Multiplier:", [1, 2, 3, 5], index=0, key=f"mult_{index_name}")
+    st.markdown("#### 📅 Day Filter & Settings")
+    
+    col_days, col_mult, col_save = st.columns([3, 1, 1])
+    
+    with col_days:
+        days_selected = st.multiselect(
+            f"Execution Days for {index_name}:",
+            options=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+            default=saved_days,
+            key=f"days_{index_name}"
+        )
 
-    if st.button(f"▶️ Run 1-Year Day-Wise Backtest ({index_name})", key=f"btn_{index_name}", type="primary"):
+    with col_mult:
+        qty_mult = st.selectbox("Lot Multiplier:", [1, 2, 3, 5, 10], index=[1, 2, 3, 5, 10].index(saved_mult) if saved_mult in [1, 2, 3, 5, 10] else 0, key=f"mult_{index_name}")
+
+    with col_save:
+        st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button(f"💾 Save {index_name} Settings", key=f"save_btn_{index_name}"):
+            idx_cfg = {
+                f"{index_name}_days": days_selected,
+                f"{index_name}_mult": qty_mult
+            }
+            if save_settings_to_file(idx_cfg):
+                st.success(f"✅ {index_name} Settings Saved!")
+            else:
+                st.error("❌ Save Failed!")
+
+    st.markdown("---")
+
+    if st.button(f"▶️ Run 1-Year Backtest ({index_name})", key=f"btn_{index_name}", type="primary"):
         with st.spinner(f"Analyzing {index_name} with 2% Slippage & Taxes..."):
             df_res = run_index_1yr_backtest(index_name, qty_multiplier=qty_mult, allowed_days=days_selected, slippage_pct=SLIPPAGE_PCT)
             st.session_state[f"res_{index_name}"] = df_res
