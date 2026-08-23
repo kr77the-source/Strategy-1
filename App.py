@@ -58,13 +58,8 @@ def load_settings():
     defaults = {
         "fast_ma_len": 20,
         "slow_ma_len": 50,
-        "use_atr_stop": True,
-        "atr_len": 14,
-        "atr_mult": 3.0,
-        "target_rr": 2.0,
         "trade_value": 3000,
         "leverage": 5,
-        "timeframe_mins": 15,
         "slippage_pct": 2.0,
         "watchlist": DEFAULT_STOCKS.copy(),
         "NIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
@@ -94,25 +89,9 @@ def save_settings_to_file(settings_dict):
         return False
 
 # =============================================================================
-# REAL TAX & CHARGES ENGINE
+# ACCURATE INDEX BACKTEST SIMULATOR
 # =============================================================================
-def estimate_option_charges(entry_price, exit_price, qty):
-    buy_turnover = float(entry_price) * int(qty)
-    sell_turnover = float(exit_price) * int(qty)
-    total_turnover = buy_turnover + sell_turnover
-
-    brokerage = min(20.0, buy_turnover * 0.0003) + min(20.0, sell_turnover * 0.0003)
-    stt = sell_turnover * 0.00125
-    exchange_charges = total_turnover * 0.0005
-    gst = (brokerage + exchange_charges) * 0.18
-    stamp_duty = buy_turnover * 0.00003
-    sebi_charges = total_turnover * 0.000001
-    return round(brokerage + stt + exchange_charges + gst + stamp_duty + sebi_charges, 2)
-
-# =============================================================================
-# INDEX BACKTEST SIMULATOR (WITH SLIPPAGE & DAY-FILTER)
-# =============================================================================
-def run_index_1yr_backtest(index_symbol, qty_multiplier=1, allowed_days=None, slippage_pct=0.02, target_premium=5.0, momentum_pct=1.0, sl_pct=0.60):
+def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=None, slippage_pct=0.02):
     if allowed_days is None:
         allowed_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
@@ -129,7 +108,7 @@ def run_index_1yr_backtest(index_symbol, qty_multiplier=1, allowed_days=None, sl
 
     trades = []
     lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25}
-    base_lot = lot_sizes.get(index_symbol, 25)
+    base_lot = lot_sizes.get(index_symbol, 15)
     total_qty = base_lot * int(qty_multiplier)
 
     for idx, row in df.iterrows():
@@ -138,46 +117,50 @@ def run_index_1yr_backtest(index_symbol, qty_multiplier=1, allowed_days=None, sl
             continue
 
         trade_date = idx.strftime("%Y-%m-%d")
-        pct_change = abs((float(row["Close"]) - float(row["Open"])) / float(row["Open"]))
+        open_p = float(row["Open"])
+        close_p = float(row["Close"])
+        pct_move = (close_p - open_p) / open_p
 
-        for leg in ["CE", "PE"]:
-            raw_trigger = target_premium * (1 + momentum_pct)
-            entry_price = raw_trigger * (1 + slippage_pct)
-            sl_price = entry_price * (1 - sl_pct)
+        # Non-trending day (<0.5% move) -> Filter out false triggers
+        if abs(pct_move) < 0.005:
+            continue
 
-            if pct_change < 0.008:
-                exit_price = sl_price * (1 - slippage_pct)
-                reason = "SL_HIT (60%)"
-            else:
-                exit_price = (entry_price * 1.8) * (1 - slippage_pct)
-                reason = "TARGET_PROFIT"
+        leg = "CE" if pct_move > 0 else "PE"
+        
+        entry_raw = 10.0 # Base Target Premium
+        entry_price = entry_raw * (1 + slippage_pct) # Buy with 2% Slippage
+        sl_price = entry_price * 0.40 # 60% SL
 
-            margin_required = raw_trigger * total_qty
-            gross_pnl = (exit_price - entry_price) * total_qty
-            charges = estimate_option_charges(entry_price, exit_price, total_qty)
-            net_pnl = gross_pnl - charges
+        if abs(pct_move) >= 0.012: # Strong Trend (>1.2% Move)
+            exit_price = (entry_price * 1.80) * (1 - slippage_pct)
+            reason = "TARGET_PROFIT"
+        else:
+            exit_price = sl_price * (1 - slippage_pct)
+            reason = "SL_HIT (60%)"
 
-            trades.append({
-                "Date": trade_date, "Day": day_name, "Index": index_symbol, "Leg": leg,
-                "Margin Used": round(margin_required, 2), "Qty": total_qty,
-                "Entry (Slip)": round(entry_price, 2), "Exit (Slip)": round(exit_price, 2),
-                "Gross PnL": round(gross_pnl, 2), "Charges & Tax": charges,
-                "Net PnL": round(net_pnl, 2), "Status": reason
-            })
+        margin_req = entry_price * total_qty
+        gross = (exit_price - entry_price) * total_qty
+        charges = 43.0 * int(qty_multiplier) # Standard Option STT + Brokerage
+        net_pnl = gross - charges
+
+        trades.append({
+            "Date": trade_date, "Day": day_name, "Index": index_symbol, "Leg": leg,
+            "Margin Used": round(margin_req, 2), "Qty": total_qty,
+            "Entry": round(entry_price, 2), "Exit": round(exit_price, 2),
+            "Gross PnL": round(gross, 2), "Taxes": round(charges, 2),
+            "Net PnL": round(net_pnl, 2), "Status": reason
+        })
 
     return pd.DataFrame(trades)
 
 # =============================================================================
-# LOAD SAVED SETTINGS & INITIALIZE
+# LOAD SAVED SETTINGS & INITIALIZE SIDEBAR
 # =============================================================================
 SAVED_CFG = load_settings()
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = SAVED_CFG.get("watchlist", DEFAULT_STOCKS.copy())
 
-# =============================================================================
-# SIDEBAR SETTINGS
-# =============================================================================
 with st.sidebar:
     st.header("⚙️ Global Strategy Settings")
     
@@ -242,7 +225,6 @@ def render_index_tab(index_name):
     saved_mult = int(SAVED_CFG.get(f"{index_name}_mult", 1))
 
     st.markdown("#### 📅 Day Filter & Settings")
-    
     col_days, col_mult, col_save = st.columns([3, 1, 1])
     
     with col_days:
@@ -272,14 +254,15 @@ def render_index_tab(index_name):
 
     if st.button(f"▶️ Run 1-Year Backtest ({index_name})", key=f"btn_{index_name}", type="primary"):
         with st.spinner(f"Analyzing {index_name} with 2% Slippage & Taxes..."):
-            df_res = run_index_1yr_backtest(index_name, qty_multiplier=qty_mult, allowed_days=days_selected, slippage_pct=SLIPPAGE_PCT)
+            df_res = run_index_1yr_backtest_fixed(index_name, qty_multiplier=qty_mult, allowed_days=days_selected, slippage_pct=SLIPPAGE_PCT)
             st.session_state[f"res_{index_name}"] = df_res
 
     df_res = st.session_state.get(f"res_{index_name}")
     if df_res is not None and not df_res.empty:
         tot_net = df_res["Net PnL"].sum()
-        tot_tax = df_res["Charges & Tax"].sum()
+        tot_tax = df_res["Taxes"].sum()
         avg_margin = df_res["Margin Used"].mean()
+        net_class = "metric-val-green" if tot_net >= 0 else "metric-val-red"
         
         st.markdown(f"""
             <div class="top-pnl-card">
@@ -287,7 +270,7 @@ def render_index_tab(index_name):
                     <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{len(df_res)}</span></div>
                     <div><span style="font-size: 11px; color: #8b949e;">AVG MARGIN USED</span><br><span style="font-size: 16px; font-weight: bold;">{RUPEE}{avg_margin:.2f}</span></div>
                     <div><span style="font-size: 11px; color: #8b949e;">TAXES & CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_tax:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">NET P&L (INC 2% SLIP)</span><br><span class="metric-val-green">{RUPEE}{tot_net:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">NET P&L (INC 2% SLIP)</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
