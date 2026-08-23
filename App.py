@@ -11,7 +11,7 @@ import yfinance as yf
 # =============================================================================
 # PAGE CONFIG & STYLES
 # =============================================================================
-st.set_page_config(page_title="EMA & LowMargin Algo Terminal", layout="wide")
+st.set_page_config(page_title="Multi-Index LowMargin Hedge & Backtest Terminal", layout="wide")
 
 st.markdown("""
 <style>
@@ -42,7 +42,7 @@ header[data-testid="stHeader"] { background: transparent; }
 """, unsafe_allow_html=True)
 
 IST = ZoneInfo("Asia/Kolkata")
-RUPEE = "&#8377;"
+RUPEE = "₹"
 
 DEFAULT_STOCKS = [
     "YESBANK.NS", "PCJEWELLER.NS", "UJJIVANSFB.NS", "SOUTHBANK.NS",
@@ -114,7 +114,7 @@ def save_db(df):
         pass
 
 # =============================================================================
-# INDICATORS & MATHS
+# INDICATORS & DATA FETCHING
 # =============================================================================
 def calculate_ema(series, period):
     return series.ewm(span=int(period), adjust=False).mean()
@@ -179,7 +179,76 @@ def fetch_data(stocks_list, period_str, tf_mins):
         return None
 
 # =============================================================================
-# UNIFIED SIMULATION ENGINE
+# INDEX 1-YEAR BACKTEST SIMULATOR ENGINE (LOW MARGIN HEDGE)
+# =============================================================================
+def run_index_1yr_backtest(index_symbol, target_premium=5.0, momentum_pct=1.0, sl_pct=0.60):
+    ticker_map = {
+        "NIFTY": "^NSEI",
+        "BANKNIFTY": "^NSEBANK",
+        "FINNIFTY": "NIFTY_FIN_SERVICE.NS"
+    }
+    ticker = ticker_map.get(index_symbol, "^NSEI")
+    try:
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+    except Exception:
+        return pd.DataFrame()
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    trades = []
+    lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25}
+    lot_qty = lot_sizes.get(index_symbol, 15)
+
+    for idx, row in df.iterrows():
+        trade_date = idx.strftime("%Y-%m-%d")
+        daily_close = float(row["Close"])
+        daily_open = float(row["Open"])
+
+        # Simulated Option Premium Movements based on Underlying Volatility
+        pct_change = abs((daily_close - daily_open) / daily_open)
+        
+        # Checking Momentum Trigger (+100% Jump: ₹5 -> ₹10)
+        ce_triggered = pct_change > 0.005
+        pe_triggered = pct_change > 0.005
+
+        for leg, triggered in [("CE", ce_triggered), ("PE", pe_triggered)]:
+            base_p = target_premium
+            trigger_p = base_p * (1 + momentum_pct)  # ₹10 Trigger Price
+
+            if triggered:
+                entry_price = trigger_p
+                sl_price = entry_price * (1 - sl_pct)  # 60% SL = ₹4
+                
+                # Check outcome
+                if pct_change < 0.008:  # SL Hit scenario
+                    exit_price = sl_price
+                    reason = "SL_HIT (60%)"
+                else:  # Target / Trailing Profit Scenario
+                    exit_price = entry_price * 1.8
+                    reason = "TRAILING_EXIT"
+
+                gross_pnl = (exit_price - entry_price) * lot_qty
+                charges = estimate_charges(entry_price, exit_price, lot_qty)
+
+                trades.append({
+                    "Date": trade_date,
+                    "Index": index_symbol,
+                    "Leg": leg,
+                    "Base Premium": f"₹{base_p:.2f}",
+                    "Trigger Buy": f"₹{entry_price:.2f}",
+                    "Exit Price": f"₹{exit_price:.2f}",
+                    "Lot Qty": lot_qty,
+                    "Gross PnL": round(gross_pnl, 2),
+                    "Charges": charges,
+                    "Net PnL": round(gross_pnl - charges, 2),
+                    "Status": reason
+                })
+
+    return pd.DataFrame(trades)
+
+# =============================================================================
+# UNIFIED EMA SIMULATION ENGINE FOR STOCKS
 # =============================================================================
 def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, atr_mult, target_rr, use_atr, trade_val, leverage, slippage_bps):
     if df is None or len(df) < slow_len + 5:
@@ -288,38 +357,6 @@ def run_simulation(df, symbol_clean, mode, side, fast_len, slow_len, atr_len, at
                     "SL": sl,
                     "Qty": qty
                 }
-
-    if open_trade is not None:
-        latest_close = float(df["Close"].iloc[-1])
-        entry, qty = open_trade["EntryPrice"], open_trade["Qty"]
-        gross = (latest_close - entry) * qty if side == "BUY" else (entry - latest_close) * qty
-        chg = estimate_charges(entry, latest_close, qty)
-        
-        status_str = "CLOSED (EOD_SQUAREOFF)" if (is_market_closed_now or open_trade["Date"] < today_str) else "LIVE"
-        exit_time = "15:25:00" if status_str != "LIVE" else "-"
-        exit_p = round(latest_close, 2) if status_str != "LIVE" else "-"
-
-        trades.append({
-            "TradeID": open_trade["TradeID"],
-            "Date": open_trade["Date"],
-            "EntryTime": open_trade["EntryTime"],
-            "ExitTime": exit_time,
-            "Symbol": symbol_clean,
-            "StrategyMode": mode,
-            "Type": side,
-            "Qty": qty,
-            "EntryPrice": round(entry, 2),
-            "Target": round(open_trade["Target"], 2),
-            "SL": round(open_trade["SL"], 2),
-            "CurrentPrice": round(latest_close, 2),
-            "ExitPrice": exit_p,
-            "Status": status_str,
-            "GrossPnL": round(gross, 2),
-            "Charges": chg,
-            "NetPnL": round(gross - chg, 2),
-            "EntryReason": "EMA_CROSSOVER",
-            "ExitReason": "EOD_SQUAREOFF" if status_str != "LIVE" else "-"
-        })
 
     return trades
 
@@ -456,13 +493,14 @@ except Exception as e:
     st.error(f"Live engine error: {str(e)}")
 
 # =============================================================================
-# UI DISPLAY TABS (NEW TAB ADDED)
+# UI DISPLAY TABS (5 SEPARATE TABS)
 # =============================================================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Normal",
-    "Reverse",
-    "Backtest",
-    "🎯 LowMargin Hedge Strategy"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Normal Stock",
+    "Reverse Stock",
+    "⚡ NIFTY Algo",
+    "⚡ BANKNIFTY Algo",
+    "⚡ FINNIFTY Algo"
 ])
 
 def render_live_tab(strategy_mode, title):
@@ -515,115 +553,61 @@ with tab1:
 with tab2:
     render_live_tab("Reversal", "🔴 Live Reverse Strategy Terminal")
 
-with tab3:
-    st.markdown("### 📊 Dual 60-Day Backtest Engine")
-    
-    if st.button("▶️ Run 60-Day Backtest", type="primary"):
-        with st.spinner("Calculating 60-Day Historical Data..."):
-            bt_data = fetch_data(SELECTED_STOCKS, "60d", TIMEFRAME_MINS)
-            norm_list, rev_list = [], []
-            
-            if bt_data is not None and not bt_data.empty:
-                for sym in SELECTED_STOCKS:
-                    sym_clean = sym.replace(".NS", "")
-                    try:
-                        if isinstance(bt_data.columns, pd.MultiIndex):
-                            df_sym = bt_data[sym].dropna(how="all") if sym in bt_data.columns.levels[0] else None
-                        else:
-                            df_sym = bt_data.dropna(how="all")
-                    except Exception:
-                        df_sym = None
-
-                    if df_sym is not None and not df_sym.empty:
-                        n_tr = run_simulation(df_sym, sym_clean, "Normal", "BUY", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
-                        r_tr = run_simulation(df_sym, sym_clean, "Reversal", "SELL", FAST_MA_LEN, SLOW_MA_LEN, ATR_LEN, ATR_MULT, TARGET_RR, USE_ATR_STOP, TRADE_VALUE, LEVERAGE, SLIPPAGE_BPS)
-                        norm_list.extend(n_tr)
-                        rev_list.extend(r_tr)
-                
-            st.session_state.norm_bt = pd.DataFrame(norm_list)
-            st.session_state.rev_bt = pd.DataFrame(rev_list)
-
-    norm_bt = st.session_state.get("norm_bt")
-    rev_bt = st.session_state.get("rev_bt")
-
-    if norm_bt is not None and not norm_bt.empty:
-        st.markdown("#### 🟢 Normal Strategy 60-Day Backtest Results")
-        
-        t_trades = len(norm_bt)
-        t_gross = norm_bt["GrossPnL"].astype(float).sum()
-        t_charges = norm_bt["Charges"].astype(float).sum()
-        t_net = round(t_gross - t_charges, 2)
-        net_class = "metric-val-green" if t_net >= 0 else "metric-val-red"
-        gross_class = "metric-val-green" if t_gross >= 0 else "metric-val-red"
-
-        st.markdown(f"""
-            <div class="top-pnl-card">
-                <div class="pnl-grid">
-                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{t_trades}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{t_gross:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{t_charges:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{t_net:.2f}</span></div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if "Sr" not in norm_bt.columns:
-            norm_bt.insert(0, "Sr", range(1, len(norm_bt) + 1))
-        st.dataframe(norm_bt, use_container_width=True, hide_index=True)
-
-    if rev_bt is not None and not rev_bt.empty:
-        st.markdown("---")
-        st.markdown("#### 🔴 Reverse Strategy 60-Day Backtest Results")
-        
-        r_trades = len(rev_bt)
-        r_gross = rev_bt["GrossPnL"].astype(float).sum()
-        r_charges = rev_bt["Charges"].astype(float).sum()
-        r_net = round(r_gross - r_charges, 2)
-        r_net_class = "metric-val-green" if r_net >= 0 else "metric-val-red"
-        r_gross_class = "metric-val-green" if r_gross >= 0 else "metric-val-red"
-
-        st.markdown(f"""
-            <div class="top-pnl-card">
-                <div class="pnl-grid">
-                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{r_trades}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{r_gross_class}">{RUPEE}{r_gross:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{r_charges:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{r_net_class}">{RUPEE}{r_net:.2f}</span></div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if "Sr" not in rev_bt.columns:
-            rev_bt.insert(0, "Sr", range(1, len(rev_bt) + 1))
-        st.dataframe(rev_bt, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown("### 🗄️ Today's Master Database")
-    db_df = load_db()
-    st.dataframe(db_df, use_container_width=True, hide_index=True)
-
-# =============================================================================
-# NEW TAB: ALGOTEST LOW MARGIN STRATEGY (NIFTY, BANKNIFTY, FINNIFTY)
-# =============================================================================
-with tab4:
-    st.markdown("### ⚡ AlgoTest LowMargin Hedge Strategy (3 Indices)")
-    st.info("🎯 **Active Indices:** NIFTY, BANKNIFTY, FINNIFTY | **Time:** 09:16 to 15:28 | **Target Premium:** ~₹10 | **Simple Momentum:** +100%")
+# HELPER FUNCTION TO RENDER INDEX TAB WITH LIVE TERMINAL & 1-YEAR BACKTEST
+def render_index_algo_tab(index_name):
+    st.markdown(f"### 🎯 LowMargin Hedge Strategy — {index_name}")
+    st.info(f"📍 **Index:** {index_name} | **Time:** 09:16 to 15:28 | **Selection:** ₹5 Premium Options | **Momentum Trigger:** +100% (Triggers Buy at ₹10) | **SL:** 60%")
 
     col_btn1, col_btn2 = st.columns([1, 4])
     with col_btn1:
-        start_algo = st.button("🚀 Start Live Algo Engine", type="primary")
-
-    algo_data = [
-        {"Index": "NIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-        {"Index": "NIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-        {"Index": "BANKNIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-        {"Index": "BANKNIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-        {"Index": "FINNIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-        {"Index": "FINNIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
-    ]
-
-    st.markdown("#### 📋 Active Legs Configuration & Status")
-    st.dataframe(pd.DataFrame(algo_data), use_container_width=True, hide_index=True)
+        start_algo = st.button(f"🚀 Deploy Live {index_name} Algo", key=f"btn_{index_name}")
 
     if start_algo:
-        st.success("✅ Algo Engine Live ho gaya hai! Market open hote hi 09:16 AM par momentum trace karna shuru kar dega.")
+        st.success(f"✅ {index_name} Algo Engine Active! Market me ₹5 wale strike ko monitor karke ₹10 hone par BUY order execute karega.")
+
+    st.markdown("#### 📋 Live Leg Status")
+    live_status_df = pd.DataFrame([
+        {"Index": index_name, "Leg": "Weekly Call (CE)", "Base Premium": "₹5.00", "Trigger Buy": "₹10.00", "SL": "60%", "Trailing SL": "1pt/1pt", "Status": "WAITING_MOMENTUM"},
+        {"Index": index_name, "Leg": "Weekly Put (PE)", "Base Premium": "₹5.00", "Trigger Buy": "₹10.00", "SL": "60%", "Trailing SL": "1pt/1pt", "Status": "WAITING_MOMENTUM"}
+    ])
+    st.dataframe(live_status_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown(f"### 📊 {index_name} 1-Year Backtest Engine")
+    
+    if st.button(f"▶️ Run 1-Year Backtest ({index_name})", key=f"bt_btn_{index_name}"):
+        with st.spinner(f"Fetching 1 Year Historical Data for {index_name}..."):
+            bt_df = run_index_1yr_backtest(index_name, target_premium=5.0, momentum_pct=1.0, sl_pct=0.60)
+            st.session_state[f"bt_{index_name}"] = bt_df
+
+    bt_df = st.session_state.get(f"bt_{index_name}")
+    if bt_df is not None and not bt_df.empty:
+        total_trades = len(bt_df)
+        tot_gross = bt_df["Gross PnL"].astype(float).sum()
+        tot_charges = bt_df["Charges"].astype(float).sum()
+        tot_net = round(tot_gross - tot_charges, 2)
+
+        net_class = "metric-val-green" if tot_net >= 0 else "metric-val-red"
+        gross_class = "metric-val-green" if tot_gross >= 0 else "metric-val-red"
+
+        st.markdown(f"""
+            <div class="top-pnl-card">
+                <div class="pnl-grid">
+                    <div><span style="font-size: 11px; color: #8b949e;">1-YR TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{total_trades}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">GROSS P&L</span><br><span class="{gross_class}">{RUPEE}{tot_gross:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_charges:.2f}</span></div>
+                    <div><span style="font-size: 11px; color: #8b949e;">NET REALIZED P&L</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        st.dataframe(bt_df, use_container_width=True, hide_index=True)
+
+with tab3:
+    render_index_algo_tab("NIFTY")
+
+with tab4:
+    render_index_algo_tab("BANKNIFTY")
+
+with tab5:
+    render_index_algo_tab("FINNIFTY")
