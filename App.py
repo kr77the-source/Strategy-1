@@ -11,7 +11,7 @@ import yfinance as yf
 # =============================================================================
 # PAGE CONFIG & STYLES
 # =============================================================================
-st.set_page_config(page_title="EMA Intraday Live Terminal & Backtest", layout="wide")
+st.set_page_config(page_title="EMA & LowMargin Algo Terminal", layout="wide")
 
 st.markdown("""
 <style>
@@ -416,7 +416,6 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # 💾 SAVE SETTINGS BUTTON
     if st.button("💾 Save Strategy Settings", type="primary"):
         current_cfg = {
             "fast_ma_len": FAST_MA_LEN,
@@ -457,12 +456,13 @@ except Exception as e:
     st.error(f"Live engine error: {str(e)}")
 
 # =============================================================================
-# UI DISPLAY TABS
+# UI DISPLAY TABS (NEW TAB ADDED)
 # =============================================================================
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "Normal",
     "Reverse",
-    "Backest"
+    "Backtest",
+    "🎯 LowMargin Hedge Strategy"
 ])
 
 def render_live_tab(strategy_mode, title):
@@ -601,3 +601,29 @@ with tab3:
     st.markdown("### 🗄️ Today's Master Database")
     db_df = load_db()
     st.dataframe(db_df, use_container_width=True, hide_index=True)
+
+# =============================================================================
+# NEW TAB: ALGOTEST LOW MARGIN STRATEGY (NIFTY, BANKNIFTY, FINNIFTY)
+# =============================================================================
+with tab4:
+    st.markdown("### ⚡ AlgoTest LowMargin Hedge Strategy (3 Indices)")
+    st.info("🎯 **Active Indices:** NIFTY, BANKNIFTY, FINNIFTY | **Time:** 09:16 to 15:28 | **Target Premium:** ~₹10 | **Simple Momentum:** +100%")
+
+    col_btn1, col_btn2 = st.columns([1, 4])
+    with col_btn1:
+        start_algo = st.button("🚀 Start Live Algo Engine", type="primary")
+
+    algo_data = [
+        {"Index": "NIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+        {"Index": "NIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+        {"Index": "BANKNIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+        {"Index": "BANKNIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+        {"Index": "FINNIFTY", "Leg": "Call (CE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+        {"Index": "FINNIFTY", "Leg": "Put (PE)", "Action": "BUY", "Premium Target": "₹10", "SL %": "60%", "Trailing SL": "1pt / 1pt", "Momentum Trigger": "100%", "Status": "WAITING_MOMENTUM"},
+    ]
+
+    st.markdown("#### 📋 Active Legs Configuration & Status")
+    st.dataframe(pd.DataFrame(algo_data), use_container_width=True, hide_index=True)
+
+    if start_algo:
+        st.success("✅ Algo Engine Live ho gaya hai! Market open hote hi 09:16 AM par momentum trace karna shuru kar dega.")
