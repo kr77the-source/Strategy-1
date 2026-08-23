@@ -89,7 +89,7 @@ def save_settings_to_file(settings_dict):
         return False
 
 # =============================================================================
-# ACCURATE INDEX BACKTEST SIMULATOR (SL = 40%)
+# TRAILING SL INDEX BACKTEST ENGINE
 # =============================================================================
 def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=None, slippage_pct=0.02):
     if allowed_days is None:
@@ -119,38 +119,50 @@ def run_index_1yr_backtest_fixed(index_symbol, qty_multiplier=1, allowed_days=No
         trade_date = idx.strftime("%Y-%m-%d")
         open_p = float(row["Open"])
         close_p = float(row["Close"])
+        high_p = float(row["High"])
+        low_p = float(row["Low"])
+        
+        day_range = (high_p - low_p) / open_p
         pct_move = (close_p - open_p) / open_p
 
-        # Filter out non-trending days (<0.5% move)
-        if abs(pct_move) < 0.005:
+        # Sideways Market Filter
+        if day_range < 0.005:
             continue
 
-        leg = "CE" if pct_move > 0 else "PE"
+        leg = "CE" if pct_move >= 0 else "PE"
         
-        entry_raw = 10.0 # Base Target Premium
+        entry_raw = 10.0
         entry_price = entry_raw * (1 + slippage_pct) # Buy with 2% Slippage
-        
-        # Stop Loss updated to 40%
         sl_pct = 0.40
-        sl_price = entry_price * (1 - sl_pct) # 40% SL Price
+        initial_sl = entry_price * (1 - sl_pct) # Initial 40% SL
 
-        if abs(pct_move) >= 0.012: # Strong Trend (>1.2% Move)
-            exit_price = (entry_price * 1.80) * (1 - slippage_pct)
-            reason = "TARGET_PROFIT"
+        # TRAILING ENGINE LOGIC
+        if day_range >= 0.012 and abs(pct_move) >= 0.006:
+            # Full Target Achieved (2.2x Extended Target via Trailing)
+            exit_price = (entry_price * 2.20) * (1 - slippage_pct)
+            reason = "TARGET_TRAILED_PROFIT"
+        elif day_range >= 0.008:
+            # Move aaya but Revers ho gaya -> Trailed SL Hit at Cost (Cost-to-Cost Exit)
+            exit_price = entry_price * (1 - slippage_pct)
+            reason = "TRAILED_SL_COST"
         else:
-            exit_price = sl_price * (1 - slippage_pct)
+            # Pure SL Hit (Initial 40% SL)
+            exit_price = initial_sl * (1 - slippage_pct)
             reason = "SL_HIT (40%)"
 
         margin_req = entry_price * total_qty
         gross = (exit_price - entry_price) * total_qty
-        charges = 43.0 * int(qty_multiplier) # Standard Option Charges
+        
+        # Turnover Based Proportional Taxes
+        real_turnover = (entry_price + exit_price) * total_qty
+        charges = round(min(25.0, real_turnover * 0.0012) + 8.0, 2) * int(qty_multiplier)
         net_pnl = gross - charges
 
         trades.append({
             "Date": trade_date, "Day": day_name, "Index": index_symbol, "Leg": leg,
             "Margin Used": round(margin_req, 2), "Qty": total_qty,
             "Entry": round(entry_price, 2), "Exit": round(exit_price, 2),
-            "Gross PnL": round(gross, 2), "Taxes": round(charges, 2),
+            "Gross PnL": round(gross, 2), "Taxes": charges,
             "Net PnL": round(net_pnl, 2), "Status": reason
         })
 
