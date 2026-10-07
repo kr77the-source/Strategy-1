@@ -1,270 +1,128 @@
-import json
-import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
-import numpy as np
-import pandas as pd
-import streamlit as st
+import datetime
 import yfinance as yf
 
-# =============================================================================
-# PAGE CONFIG & STYLES
-# =============================================================================
-st.set_page_config(page_title="Multi-Asset Algo Terminal", layout="wide")
 
-st.markdown("""
-<style>
-.block-container { padding-top: 1.5rem !important; padding-bottom: 0rem !important; padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
-header[data-testid="stHeader"] { background: transparent; }
-.top-pnl-card {
-    background: linear-gradient(135deg, #1e2530 0%, #161b22 100%);
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 12px;
-    color: #ffffff;
-}
-.pnl-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-    text-align: center;
-}
-@media (min-width: 600px) {
-    .pnl-grid {
-        grid-template-columns: repeat(5, 1fr);
-    }
-}
-.metric-val-green { color: #4CAF50; font-weight: bold; font-size: 16px; }
-.metric-val-red { color: #FF5252; font-weight: bold; font-size: 16px; }
-</style>
-""", unsafe_allow_html=True)
+def analyze_bias(ticker_symbol):
+    print(f"\n==================================================")
+    print(f"       ANALYZING LIVE BIAS FOR: {ticker_symbol.upper()}")
+    print(f"==================================================\n")
 
-RUPEE = "₹"
-DEFAULT_STOCKS = ["YESBANK.NS", "PCJEWELLER.NS", "RELIANCE.NS", "TCS.NS", "SBIN.NS"]
-SETTINGS_FILE = "strategy_settings.json"
+    # Fetch daily data for Case 1 & Case 2
+    ticker = yf.Ticker(ticker_symbol)
+    df_daily = ticker.history(period="5d", interval="1d")
 
-# =============================================================================
-# SETTINGS ENGINE
-# =============================================================================
-def load_settings():
-    defaults = {
-        "fast_ma_len": 20, "slow_ma_len": 50, "trade_value": 3000, "leverage": 5,
-        "watchlist": DEFAULT_STOCKS.copy(),
-        "NIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "BANKNIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "FINNIFTY_days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-        "NIFTY_mult": 1, "BANKNIFTY_mult": 1, "FINNIFTY_mult": 1
-    }
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                defaults.update(json.load(f))
-        except Exception:
-            pass
-    return defaults
+    if len(df_daily) < 2:
+        print("Error: Live data fetch nahi ho paya. Ticker symbol re-check karein.")
+        return
 
-def save_settings_to_file(settings_dict):
-    try:
-        current = load_settings()
-        current.update(settings_dict)
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(current, f, indent=4)
-        return True
-    except Exception:
-        return False
+    # Previous Day Data (Index -2) & Current/Latest Day Data (Index -1)
+    prev_day = df_daily.iloc[-2]
+    curr_day = df_daily.iloc[-1]
 
-# =============================================================================
-# REAL SPOT ATR BREAKOUT BACKTEST ENGINE (BUG FIXED)
-# =============================================================================
-def run_real_indicator_backtest(index_symbol, qty_multiplier=1, allowed_days=None):
-    if allowed_days is None:
-        allowed_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    pdh = prev_day["High"]
+    pdl = prev_day["Low"]
+    pdc = prev_day["Close"]
 
-    ticker_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS"}
-    ticker = ticker_map.get(index_symbol, "^NSEI")
-    
-    try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False)
-    except Exception as e:
-        st.error(f"Data Fetch Error: {e}")
-        return pd.DataFrame()
+    curr_high = curr_day["High"]
+    curr_low = curr_day["Low"]
+    curr_close = curr_day["Close"]
 
-    if df is None or df.empty:
-        st.warning("Yahoo Finance se koi data nahi mila.")
-        return pd.DataFrame()
+    range_size = pdh - pdl
+    close_position = (pdc - pdl) / range_size if range_size > 0 else 0.5
 
-    # FIX MULTIINDEX COLUMNS ISSUE IN YFINANCE
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    # -------------------------------------------------------------
+    # CASE 1: Daily Closing Bias Logic
+    # -------------------------------------------------------------
+    case1_bias = "NEUTRAL"
+    if close_position >= 0.70:
+        case1_bias = "BULLISH (Strong High Close)"
+    elif close_position <= 0.30:
+        case1_bias = "BEARISH (Strong Low Close)"
 
-    # Calculate True Range & ATR
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift(1))
-    low_close = np.abs(df['Low'] - df['Close'].shift(1))
-    df['TR'] = np.maximum(high_low, np.maximum(high_close, low_close))
-    df['ATR'] = df['TR'].rolling(window=14).mean()
-    df.dropna(inplace=True)
+    # -------------------------------------------------------------
+    # CASE 2: Liquidity Sweep Logic (PDH/PDL)
+    # -------------------------------------------------------------
+    case2_bias = "NO SWEEP"
+    # Buy-Side Liquidity (BSL) Sweep: Price went above PDH but closed below PDH
+    if curr_high > pdh and curr_close < pdh:
+        case2_bias = "BEARISH SWEEP (BSL Grabbed above PDH)"
+    # Sell-Side Liquidity (SSL) Sweep: Price went below PDL but closed above PDL
+    elif curr_low < pdl and curr_close > pdl:
+        case2_bias = "BULLISH SWEEP (SSL Grabbed below PDL)"
 
-    trades = []
-    lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25}
-    total_qty = lot_sizes.get(index_symbol, 15) * int(qty_multiplier)
+    # -------------------------------------------------------------
+    # CASE 3: Intra-session / Live Price Action Alignment
+    # -------------------------------------------------------------
+    # Fetch 15-minute intraday data
+    df_15m = ticker.history(period="2d", interval="15m")
+    current_price = curr_close
 
-    for idx, row in df.iterrows():
-        day_name = idx.strftime("%A")
-        if day_name not in allowed_days:
-            continue
+    if not df_15m.empty:
+        current_price = df_15m.iloc[-1]["Close"]
 
-        trade_date = idx.strftime("%Y-%m-%d")
-        open_p = float(row["Open"])
-        high_p = float(row["High"])
-        low_p = float(row["Low"])
-        close_p = float(row["Close"])
-        atr_val = float(row["ATR"])
+    # Final Decision Matrix
+    final_bias = "NEUTRAL / NO CLEAR DIRECTION"
+    entry_price = 0.0
+    stop_loss = 0.0
+    target_1 = 0.0
 
-        breakout_threshold = 0.4 * atr_val
+    # Decision Rules
+    if "BULLISH SWEEP" in case2_bias or (
+        "BULLISH" in case1_bias and current_price > pdc
+    ):
+        final_bias = "BUY (LONG)"
+        entry_price = round(current_price, 2)
+        # SL below recent low / swept low
+        stop_loss = round(min(curr_low, pdl) * 0.997, 2)
+        # Risk to Reward 1:2
+        risk = entry_price - stop_loss
+        target_1 = round(entry_price + (risk * 2), 2)
 
-        if (high_p - open_p) >= breakout_threshold and close_p > open_p:
-            leg = "CE"
-            entry_spot = open_p + breakout_threshold
-            sl_spot = entry_spot - (0.4 * atr_val)
-            target_spot = entry_spot + (0.8 * atr_val)
-        elif (open_p - low_p) >= breakout_threshold and close_p < open_p:
-            leg = "PE"
-            entry_spot = open_p - breakout_threshold
-            sl_spot = entry_spot + (0.4 * atr_val)
-            target_spot = entry_spot - (0.8 * atr_val)
-        else:
-            continue
+    elif "BEARISH SWEEP" in case2_bias or (
+        "BEARISH" in case1_bias and current_price < pdc
+    ):
+        final_bias = "SELL (SHORT)"
+        entry_price = round(current_price, 2)
+        # SL above recent high / swept high
+        stop_loss = round(max(curr_high, pdh) * 1.003, 2)
+        # Risk to Reward 1:2
+        risk = stop_loss - entry_price
+        target_1 = round(entry_price - (risk * 2), 2)
 
-        if leg == "CE":
-            if high_p >= target_spot:
-                exit_spot = target_spot
-                status = "TARGET_PROFIT"
-            elif low_p <= sl_spot:
-                exit_spot = sl_spot
-                status = "SL_HIT"
-            else:
-                exit_spot = close_p
-                status = "EOD_EXIT"
-            points_gained = exit_spot - entry_spot
-        else:
-            if low_p <= target_spot:
-                exit_spot = target_spot
-                status = "TARGET_PROFIT"
-            elif high_p >= sl_spot:
-                exit_spot = sl_spot
-                status = "SL_HIT"
-            else:
-                exit_spot = close_p
-                status = "EOD_EXIT"
-            points_gained = entry_spot - exit_spot
+    # -------------------------------------------------------------
+    # PRINT RESULTS
+    # -------------------------------------------------------------
+    print(f"Live Price        : {round(current_price, 2)}")
+    print(f"Previous Day High : {round(pdh, 2)}")
+    print(f"Previous Day Low  : {round(pdl, 2)}")
+    print(f"Previous Day Close: {round(pdc, 2)}")
+    print(f"--------------------------------------------------")
+    print(f"[Case 1] Closing Bias   : {case1_bias}")
+    print(f"[Case 2] Liquidity Sweep: {case2_bias}")
+    print(f"--------------------------------------------------")
+    print(f"FINAL SYSTEM BIAS       : >>> {final_bias} <<<")
 
-        gross_pnl = points_gained * total_qty
-        turnover = (entry_spot + exit_spot) * total_qty
-        charges = round(min(40.0, turnover * 0.0002) + 15.0, 2)
-        net_pnl = gross_pnl - charges
+    if final_bias in ["BUY (LONG)", "SELL (SHORT)"]:
+        print(f"Suggested Entry Range   : {entry_price}")
+        print(f"Calculated Stop Loss    : {stop_loss}")
+        print(f"Target 1 (1:2 R:R)      : {target_1}")
+    else:
+        print("Market Rangebound / Liquidity Sweep ke confirmation ka wait karein.")
 
-        trades.append({
-            "Date": trade_date, "Day": day_name, "Index": index_symbol, "Leg": leg,
-            "Entry Spot": round(entry_spot, 2), "Exit Spot": round(exit_spot, 2),
-            "Points": round(points_gained, 2), "Gross PnL": round(gross_pnl, 2),
-            "Taxes": charges, "Net PnL": round(net_pnl, 2), "Status": status
-        })
+    print(f"==================================================\n")
 
-    return pd.DataFrame(trades)
 
-# =============================================================================
-# UI & TAB CONFIG
-# =============================================================================
-SAVED_CFG = load_settings()
+if __name__ == "__main__":
+    # Interface: User Input for Share Name
+    print("Welcome to 3-Case Daily Bias System")
+    user_symbol = input(
+        "Enter Stock/Index Ticker (e.g., RELIANCE.NS, YESBANK.NS, IDEA.NS, ^NSEI): "
+    )
 
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = SAVED_CFG.get("watchlist", DEFAULT_STOCKS.copy())
+    if user_symbol.strip():
+        # Auto-append .NS for Indian Stocks if forgotten
+        symbol = user_symbol.strip().upper()
+        if not symbol.startswith("^") and not symbol.endswith(".NS"):
+            symbol += ".NS"
 
-with st.sidebar:
-    st.header("⚙️ Strategy Settings")
-    FAST_MA_LEN = st.number_input("Fast EMA Length", value=int(SAVED_CFG.get("fast_ma_len", 20)))
-    SLOW_MA_LEN = st.number_input("Slow EMA Length", value=int(SAVED_CFG.get("slow_ma_len", 50)))
-    
-    if st.button("💾 SAVE SIDEBAR SETTINGS", type="primary"):
-        current_cfg = {"fast_ma_len": FAST_MA_LEN, "slow_ma_len": SLOW_MA_LEN}
-        if save_settings_to_file(current_cfg):
-            st.success("✅ Saved!")
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Normal Stock (EMA)", "Reverse Stock (EMA)", "⚡ NIFTY Algo", "⚡ BANKNIFTY Algo", "⚡ FINNIFTY Algo"
-])
-
-with tab1:
-    st.markdown("### 🟢 Live Normal Stock Strategy")
-
-with tab2:
-    st.markdown("### 🔴 Live Reverse Stock Strategy")
-
-def render_index_tab(index_name):
-    st.markdown(f"### 🎯 Real ATR Breakout Terminal — {index_name}")
-    
-    saved_days = SAVED_CFG.get(f"{index_name}_days", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
-    saved_mult = int(SAVED_CFG.get(f"{index_name}_mult", 1))
-
-    col_days, col_mult, col_save = st.columns([3, 1, 1])
-    with col_days:
-        days_selected = st.multiselect(
-            f"Execution Days for {index_name}:",
-            options=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-            default=saved_days, key=f"days_{index_name}"
-        )
-    with col_mult:
-        qty_mult = st.selectbox("Lot Multiplier:", [1, 2, 3, 5, 10], index=0, key=f"mult_{index_name}")
-
-    with col_save:
-        st.markdown("<div style='padding-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button(f"💾 Save {index_name} Settings", key=f"save_btn_{index_name}"):
-            if save_settings_to_file({f"{index_name}_days": days_selected, f"{index_name}_mult": qty_mult}):
-                st.success("✅ Saved!")
-
-    st.markdown("---")
-
-    if st.button(f"▶️ Run Real Backtest ({index_name})", key=f"btn_{index_name}", type="primary"):
-        with st.spinner(f"Fetching real market data for {index_name}..."):
-            df_res = run_real_indicator_backtest(index_name, qty_multiplier=qty_mult, allowed_days=days_selected)
-            st.session_state[f"res_{index_name}"] = df_res
-
-    df_res = st.session_state.get(f"res_{index_name}")
-    if df_res is not None and not df_res.empty:
-        tot_net = df_res["Net PnL"].sum()
-        tot_tax = df_res["Taxes"].sum()
-        net_class = "metric-val-green" if tot_net >= 0 else "metric-val-red"
-        
-        st.markdown(f"""
-            <div class="top-pnl-card">
-                <div class="pnl-grid">
-                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL TRADES</span><br><span style="font-size: 16px; font-weight: bold;">{len(df_res)}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">TOTAL POINTS</span><br><span style="font-size: 16px; font-weight: bold;">{df_res['Points'].sum():.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">TAXES & CHARGES</span><br><span style="font-size: 16px; font-weight: bold; color: #e3b341;">{RUPEE}{tot_tax:.2f}</span></div>
-                    <div><span style="font-size: 11px; color: #8b949e;">NET P&L</span><br><span class="{net_class}">{RUPEE}{tot_net:.2f}</span></div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("#### 📊 Day-Wise Breakdown")
-        day_pivot = df_res.groupby("Day").agg(
-            Trades=("Net PnL", "count"),
-            Win_Rate=("Net PnL", lambda x: f"{(x > 0).mean()*100:.1f}%"),
-            Net_PnL=("Net PnL", "sum")
-        ).reset_index()
-        st.dataframe(day_pivot, use_container_width=True, hide_index=True)
-        
-        st.markdown("#### 📜 Detailed Trade Log")
-        st.dataframe(df_res, use_container_width=True, hide_index=True)
-
-with tab3:
-    render_index_tab("NIFTY")
-
-with tab4:
-    render_index_tab("BANKNIFTY")
-
-with tab5:
-    render_index_tab("FINNIFTY")
+        analyze_bias(symbol)
