@@ -1,6 +1,5 @@
 import datetime
 import streamlit as st
-from streamlit_searchbox import st_searchbox
 import yfinance as yf
 
 # Streamlit Page Config
@@ -66,37 +65,26 @@ STOCK_DATABASE = [
     "^NSEBANK",
 ]
 
-
-# Live Filter Function for Auto-complete
-def search_stocks(search_term: str):
-    if not search_term:
-        return []
-
-    search_term = search_term.upper().strip()
-    matches = [s for s in STOCK_DATABASE if search_term in s.upper()]
-
-    # Agar list mein nah mile toh custom ticker suggestion
-    if not matches and len(search_term) > 0:
-        custom_symbol = (
-            search_term
-            if search_term.startswith("^") or search_term.endswith(".NS")
-            else f"{search_term}.NS"
-        )
-        matches = [custom_symbol]
-
-    return matches
-
-
-# Dynamic Search Box (Type karte hi suggestions aayenge)
-selected_symbol = st_searchbox(
-    search_stocks,
-    key="stock_search",
-    placeholder="Stock name type karein (e.g. YES, RELIANCE, IDEA)...",
+# Built-in searchable selectbox (Type karte hi auto-filter hoga)
+selected_symbol = st.selectbox(
+    "Stock Name / Ticker Choose Karein (Type to search):",
+    options=STOCK_DATABASE,
+    index=0,
 )
 
-if selected_symbol:
-    symbol = selected_symbol.upper()
+# Optional text box agar list ke baahar ka koi stock analyze karna ho
+custom_ticker = st.text_input(
+    "Ya phir koi dusra Stock Ticker yahan type karein (Optional):", placeholder="e.g. IRFC"
+)
 
+if custom_ticker.strip():
+    symbol = custom_ticker.strip().upper()
+    if not symbol.startswith("^") and not symbol.endswith(".NS"):
+        symbol += ".NS"
+else:
+    symbol = selected_symbol
+
+if st.button("Analyze Bias"):
     with st.spinner(f"Fetching live data for {symbol}..."):
         try:
             ticker = yf.Ticker(symbol)
@@ -104,7 +92,7 @@ if selected_symbol:
 
             if len(df_daily) < 2:
                 st.error(
-                    "Error: Live data fetch nahi ho paya. Ticker symbol re-check karein."
+                    "Error: Live data fetch nahi ho paya. Ticker symbol check karein."
                 )
             else:
                 prev_day = df_daily.iloc[-2]
