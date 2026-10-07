@@ -1,5 +1,6 @@
 import datetime
 import streamlit as st
+from streamlit_searchbox import st_searchbox
 import yfinance as yf
 
 # Streamlit Page Config
@@ -12,7 +13,7 @@ st.write(
     "Live stock data analyze karke Buy/Sell Bias, Stop Loss aur Targets dekhein."
 )
 
-# Popular Stocks & Indices List for Auto-complete / Recommendations
+# Popular Stocks & Indices List
 STOCK_DATABASE = [
     "RELIANCE.NS",
     "TCS.NS",
@@ -61,41 +62,40 @@ STOCK_DATABASE = [
     "SBILIFE.NS",
     "BEL.NS",
     "HAL.NS",
-    "TATA-CHAIN.NS",
-    "^NSEI",  # Nifty 50 Index
-    "^NSEBANK",  # Nifty Bank Index
+    "^NSEI",
+    "^NSEBANK",
 ]
 
-# Text input for filtering/typing
-search_text = st.text_input(
-    "Stock Name / Ticker Type Karein (e.g. YES, RELIANCE, IDEA):",
-    value="RELIANCE",
+
+# Live Filter Function for Auto-complete
+def search_stocks(search_term: str):
+    if not search_term:
+        return []
+
+    search_term = search_term.upper().strip()
+    matches = [s for s in STOCK_DATABASE if search_term in s.upper()]
+
+    # Agar list mein nah mile toh custom ticker suggestion
+    if not matches and len(search_term) > 0:
+        custom_symbol = (
+            search_term
+            if search_term.startswith("^") or search_term.endswith(".NS")
+            else f"{search_term}.NS"
+        )
+        matches = [custom_symbol]
+
+    return matches
+
+
+# Dynamic Search Box (Type karte hi suggestions aayenge)
+selected_symbol = st_searchbox(
+    search_stocks,
+    key="stock_search",
+    placeholder="Stock name type karein (e.g. YES, RELIANCE, IDEA)...",
 )
 
-# Filter recommendations based on starting letters
-filtered_stocks = [
-    s
-    for s in STOCK_DATABASE
-    if s.upper().startswith(search_text.strip().upper())
-]
-
-# If typing doesn't match default list, allow user's custom ticker
-if not filtered_stocks and search_text.strip():
-    custom_ticker = search_text.strip().upper()
-    if not custom_ticker.startswith("^") and not custom_ticker.endswith(".NS"):
-        custom_ticker += ".NS"
-    filtered_stocks = [custom_ticker]
-
-# Dropdown / Selectbox for Recommendation Selection
-selected_symbol = st.selectbox(
-    "Select Recommended Stock:",
-    options=filtered_stocks
-    if filtered_stocks
-    else [search_text.strip().upper() + ".NS"],
-)
-
-if st.button("Analyze Bias") and selected_symbol:
-    symbol = selected_symbol
+if selected_symbol:
+    symbol = selected_symbol.upper()
 
     with st.spinner(f"Fetching live data for {symbol}..."):
         try:
@@ -104,7 +104,7 @@ if st.button("Analyze Bias") and selected_symbol:
 
             if len(df_daily) < 2:
                 st.error(
-                    "Error: Live data fetch nahi ho paya. Ticker symbol check karein."
+                    "Error: Live data fetch nahi ho paya. Ticker symbol re-check karein."
                 )
             else:
                 prev_day = df_daily.iloc[-2]
