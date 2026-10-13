@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 
 # Page Configuration
 st.set_page_config(
@@ -7,19 +8,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Styling (CSS)
+# Custom Styling
 st.markdown("""
     <style>
     .main {
         background-color: #070a16;
         color: rgba(255,255,255,0.88);
-    }
-    .stButton>button {
-        background: linear-gradient(135deg, rgba(255,122,24,0.8), rgba(181,107,255,0.8));
-        color: white;
-        border-radius: 12px;
-        font-weight: bold;
-        border: none;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -27,19 +21,28 @@ st.markdown("""
 # App Header
 st.title("🚀 Zero-Hero Option Scanner")
 st.markdown("##### Live Market F&O Scanner • Deep ITM/OTM Strike Tracking (₹3 - ₹5)")
+st.markdown("---")
 
-# Sidebar Controls
-st.sidebar.header("Trading Controls")
-selected_symbol = st.sidebar.selectbox("Select Index / Stock", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
-selected_expiry = st.sidebar.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
+# --- TOP CONTROLS (Sidebar removed, moved to main page top) ---
+top_col1, top_col2, top_col3 = st.columns(3)
 
-scan_button = st.sidebar.button("Run Live Scan")
+with top_col1:
+    selected_symbol = st.selectbox("Select Index / Stock", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Main Dashboard layout
+with top_col2:
+    selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
+
+with top_col3:
+    st.markdown("### ") # Alignment spacing
+    auto_refresh = st.checkbox("🔄 Auto-Run Every 2 Seconds", value=False)
+
+st.markdown("---")
+
+# Main Dashboard layout (Metrics)
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.metric(label="Spot Price", value="24,380.50", delta="+45.20")
+    st.metric(label=f"{selected_symbol} Spot Price", value="24,380.50", delta="+45.20")
 
 with col2:
     st.metric(label="Day High", value="24,500.00")
@@ -50,19 +53,18 @@ with col3:
 st.markdown("---")
 
 # Results Section
-if scan_button:
-    st.success(f"Scanning Live Option Chain for {selected_symbol} ({selected_expiry})...")
-    
-    # Placeholder table for Zero-Hero Signals
-    st.subheader("🎯 Active Zero-Hero Signals (₹3 - ₹5 Premium)")
-    
-    data = {
-        "Type": ["CALL", "PUT"],
-        "Strike": [24600, 24100],
-        "Premium (₹)": [3.50, 4.10],
-        "Max Risk": ["₹262", "₹307"],
-        "Action": ["BUY", "BUY"]
-    }
-    st.table(data)
-else:
-    st.info("Sidebar mein **'Run Live Scan'** button par click karein taaki signals load ho sakein.")
+st.subheader(f"🎯 Active Zero-Hero Signals for {selected_symbol} ({selected_expiry})")
+
+data = {
+    "Type": ["CALL", "PUT"],
+    "Strike": [24600, 24100],
+    "Premium (₹)": [3.50, 4.10],
+    "Max Risk": ["₹250 - ₹300", "₹250 - ₹300"],
+    "Action": ["BUY", "BUY"]
+}
+st.table(data)
+
+# --- AUTO-RUN LOGIC (2 Seconds interval) ---
+if auto_refresh:
+    time.sleep(2)
+    st.rerun()
