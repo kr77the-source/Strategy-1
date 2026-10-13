@@ -2,17 +2,18 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+from datetime import datetime
 
 # Page Configuration
 st.set_page_config(
-    page_title="Zero-Hero Live Option Scanner",
+    page_title="Advanced Zero-Hero Scanner",
     page_icon="📈",
     layout="wide"
 )
 
 # App Header
-st.title("🚀 Zero-Hero Live Option Scanner (Phone Edition)")
-st.markdown("##### Real-Time NSE Option Chain Tracker (₹3 - ₹5 Strike Filter)")
+st.title("🚀 Advanced Zero-Hero Option Scanner")
+st.markdown("##### With Time Filter & Real-Time NSE Data (₹3 - ₹5)")
 st.markdown("---")
 
 # --- TOP CONTROLS ---
@@ -30,34 +31,46 @@ with top_col3:
 
 st.markdown("---")
 
-# --- FETCH DATA USING PROXY/SESSION TO BYPASS CLOUD BLOCK ---
-@st.cache_data(ttl=2) # Cache for 2 seconds to prevent rate limits
+# --- ADVANCED SETTINGS EXPANDER (Filters) ---
+with st.expander("⚙️ Advanced Strategy Rules (Click to Configure)"):
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        # Time filter for Zero-Hero (Expiry day second half is best)
+        enable_time_filter = st.checkbox("Enable Safe Time Filter (Scan only after 1:00 PM)", value=True)
+    with col_f2:
+        # Direction filter
+        trade_direction = st.selectbox("Allowed Direction", ["BOTH (CE & PE)", "ONLY CALL (CE)", "ONLY PUT (PE)"])
+
+# --- FETCH DATA FROM NSE ---
+@st.cache_data(ttl=2)
 def fetch_live_data(symbol):
-    # Using public financial gateway / proxy to bypass cloud IP restriction
     url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Referer": "https://www.nseindia.com/"
     }
-    
     try:
         session = requests.Session()
-        # Step 1: Hit home page to capture valid cookies
         home_resp = session.get("https://www.nseindia.com", headers=headers, timeout=5)
         cookies = home_resp.cookies
-        
-        # Step 2: Fetch option chain with cookies
         response = session.get(url, headers=headers, cookies=cookies, timeout=10)
-        
         if response.status_code == 200:
             return response.json()
         else:
             return None
-    except Exception as e:
+    except Exception:
         return None
+
+# --- TIME CHECK LOGIC ---
+current_time = datetime.now().time()
+market_ready = True
+
+if enable_time_filter:
+    # 13:00 is 1:00 PM
+    allowed_start_time = datetime.strptime("13:00:00", "%H:%M:%S").time()
+    if current_time < allowed_start_time:
+        market_ready = False
 
 # Fetching Data
 data = fetch_live_data(selected_symbol)
@@ -73,45 +86,48 @@ if data and 'records' in data:
         st.metric(label="Active Selected Expiry", value=selected_expiry)
 
     st.markdown("---")
-    st.subheader(f"🎯 Zero-Hero Signals (₹3 - ₹5 Premium)")
+    st.subheader(f"🎯 Filtered Zero-Hero Signals (₹3 - ₹5)")
 
-    signals = []
-    for item in records:
-        # Check Call Option (CE)
-        if 'CE' in item:
-            ce_ltp = item['CE'].get('lastPrice', 0)
-            ce_strike = item['CE'].get('strikePrice', 0)
-            if 3.0 <= ce_ltp <= 5.0:
-                signals.append({
-                    "Type": "CALL (CE)",
-                    "Strike": ce_strike,
-                    "Premium (₹)": ce_ltp,
-                    "Max Risk": "₹250 - ₹300",
-                    "Action": "BUY"
-                })
-        
-        # Check Put Option (PE)
-        if 'PE' in item:
-            pe_ltp = item['PE'].get('lastPrice', 0)
-            pe_strike = item['PE'].get('strikePrice', 0)
-            if 3.0 <= pe_ltp <= 5.0:
-                signals.append({
-                    "Type": "PUT (PE)",
-                    "Strike": pe_strike,
-                    "Premium (₹)": pe_ltp,
-                    "Max Risk": "₹250 - ₹300",
-                    "Action": "BUY"
-                })
-
-    if len(signals) > 0:
-        df_signals = pd.DataFrame(signals)
-        st.table(df_signals)
+    if not market_ready:
+        st.warning(f"⏳ Safe Time Filter Active: Dopahar 1:00 PM se pehle Zero-Hero scan pause hai (Current Time: {current_time.strftime('%H:%M:%S')}). Aap advanced settings se ise off kar sakte hain.")
     else:
-        st.info(f"Is samay market mein ₹3 se ₹5 ki range mein koi option active nahi hai.")
-else:
-    st.warning("⚠️ Live market hours ke bahar NSE option chain data restrict kar deta hai. Market open hone par yeh yahin aapke phone par live update dikhayega.")
+        signals = []
+        for item in records:
+            # Check Call Option (CE)
+            if 'CE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY CALL (CE)"]:
+                ce_ltp = item['CE'].get('lastPrice', 0)
+                ce_strike = item['CE'].get('strikePrice', 0)
+                if 3.0 <= ce_ltp <= 5.0:
+                    signals.append({
+                        "Type": "CALL (CE)",
+                        "Strike": ce_strike,
+                        "Premium (₹)": ce_ltp,
+                        "Max Risk": "₹250 - ₹300",
+                        "Action": "BUY"
+                    })
+            
+            # Check Put Option (PE)
+            if 'PE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY PUT (PE)"]:
+                pe_ltp = item['PE'].get('lastPrice', 0)
+                pe_strike = item['PE'].get('strikePrice', 0)
+                if 3.0 <= pe_ltp <= 5.0:
+                    signals.append({
+                        "Type": "PUT (PE)",
+                        "Strike": pe_strike,
+                        "Premium (₹)": pe_ltp,
+                        "Max Risk": "₹250 - ₹300",
+                        "Action": "BUY"
+                    })
 
-# --- AUTO-RUN LOGIC (2 Seconds interval) ---
+        if len(signals) > 0:
+            df_signals = pd.DataFrame(signals)
+            st.table(df_signals)
+        else:
+            st.info("Is samay ₹3 se ₹5 ki range mein koi option match nahi ho raha hai.")
+else:
+    st.warning("⚠️ Market closed ya data restricted hai. Live market hours mein yeh automatically signals dikhayega.")
+
+# --- AUTO-RUN LOGIC ---
 if auto_refresh:
     time.sleep(2)
     st.rerun()
