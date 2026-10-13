@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS to force columns side-by-side on mobile & compact spacing
+# Custom CSS for compact mobile view and side-by-side elements
 st.markdown("""
     <style>
     .block-container {
@@ -32,11 +32,11 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
     }
-    /* Force columns to stay side-by-side on mobile */
-    [data-testid="column"] {
-        width: 50% !important;
-        flex: 50% !important;
-        min-width: 50% !important;
+    /* Force side-by-side layout for columns on all screens */
+    div[data-testid="column"] {
+        float: left;
+        flex: 1 1 auto;
+        min-width: 45% !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -65,12 +65,12 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Expiry and Lot Size strictly side-by-side (Half-Half)
+# Expiry & Lots side-by-side container
 c1, c2 = st.columns(2)
 with c1:
-    selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
+    selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
 with c2:
-    lot_multiplier = st.number_input("Select Lots", min_value=1, max_value=50, value=1, step=1)
+    lot_multiplier = st.number_input("Lots", min_value=1, max_value=50, value=1, step=1)
 
 auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
 
