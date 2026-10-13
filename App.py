@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for compact mobile view
+# Custom CSS for table layout & compact mobile view
 st.markdown("""
     <style>
     .block-container {
@@ -59,7 +59,7 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Using HTML/Streamlit container columns to force side-by-side on mobile
+# --- EXPIRY & LOTS SIDE-BY-SIDE USING STREAMLIT TABLE/COLUMNS ---
 col1, col2 = st.columns(2)
 with col1:
     selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
@@ -171,7 +171,7 @@ if data and 'records' in data:
         else:
             st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
 else:
-    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikheगा.")
+    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikhega.")
 
 # --- PNL & TRADE HISTORY LOG ---
 st.markdown("---")
