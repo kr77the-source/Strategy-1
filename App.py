@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS to forcefully keep columns side-by-side on mobile screens
+# Custom CSS for compact mobile view
 st.markdown("""
     <style>
     .block-container {
@@ -31,16 +31,6 @@ st.markdown("""
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
-    }
-    /* Force Streamlit horizontal blocks not to stack on mobile */
-    [data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-direction: row !important;
-    }
-    [data-testid="column"] {
-        width: 50% !important;
-        flex: 1 1 50% !important;
-        min-width: unset !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -69,11 +59,11 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Expiry and Lots strictly side-by-side in one row (Half-Half)
-c1, c2 = st.columns(2)
-with c1:
+# Using HTML/Streamlit container columns to force side-by-side on mobile
+col1, col2 = st.columns(2)
+with col1:
     selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
-with c2:
+with col2:
     lot_multiplier = st.number_input("Lots", min_value=1, max_value=50, value=1, step=1)
 
 auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
@@ -181,7 +171,7 @@ if data and 'records' in data:
         else:
             st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
 else:
-    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikhega.")
+    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikheगा.")
 
 # --- PNL & TRADE HISTORY LOG ---
 st.markdown("---")
