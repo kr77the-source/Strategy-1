@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for compact mobile spacing
+# Custom CSS to force columns side-by-side on mobile & compact spacing
 st.markdown("""
     <style>
     .block-container {
@@ -31,6 +31,12 @@ st.markdown("""
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
+    }
+    /* Force columns to stay side-by-side on mobile */
+    [data-testid="column"] {
+        width: 50% !important;
+        flex: 50% !important;
+        min-width: 50% !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -59,7 +65,7 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Expiry and Lot Size side-by-side in one row (Half-Half)
+# Expiry and Lot Size strictly side-by-side (Half-Half)
 c1, c2 = st.columns(2)
 with c1:
     selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
