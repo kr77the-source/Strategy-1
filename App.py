@@ -56,9 +56,10 @@ st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS (Expiry and Lot Size in one row) ---
+# --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
+# Expiry and Lot Size side-by-side in one row (Half-Half)
 c1, c2 = st.columns(2)
 with c1:
     selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
@@ -122,7 +123,6 @@ if data and 'records' in data:
     else:
         signals = []
         for item in records:
-            # Check Call Option (CE)
             if 'CE' in item:
                 ce_ltp = item['CE'].get('lastPrice', 0)
                 ce_strike = item['CE'].get('strikePrice', 0)
@@ -137,7 +137,6 @@ if data and 'records' in data:
                         "Action": "BUY"
                     })
             
-            # Check Put Option (PE)
             if 'PE' in item:
                 pe_ltp = item['PE'].get('lastPrice', 0)
                 pe_strike = item['PE'].get('strikePrice', 0)
