@@ -4,18 +4,18 @@ import requests
 import time
 from datetime import datetime
 
-# Page Configuration & Compact Padding
+# Page Configuration
 st.set_page_config(
     page_title="Zero-Hero Live Tracker",
     page_icon="📈",
     layout="wide"
 )
 
-# Custom CSS to reduce unnecessary gaps/padding on mobile screens
+# Custom CSS with increased top padding to prevent cutting
 st.markdown("""
     <style>
     .block-container {
-        padding-top: 1rem;
+        padding-top: 3.5rem;
         padding-bottom: 1rem;
         padding-left: 1rem;
         padding-right: 1rem;
@@ -48,7 +48,7 @@ today_expiry_text = expiry_mapping.get(today_day, f"📅 Today is {today_day}")
 
 st.success(f"**{today_expiry_text}** (Sahi index select karke trade karein)")
 
-# App Header (Compact)
+# App Header
 st.title("🚀 Zero-Hero Scanner & PnL")
 st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 
@@ -56,7 +56,7 @@ st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS (Compact 2x2 grid for mobile view) ---
+# --- TOP CONTROLS ---
 c1, c2 = st.columns(2)
 with c1:
     selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
@@ -119,7 +119,6 @@ if data and 'records' in data:
     spot_price = data['records']['underlyingValue']
     records = data['records']['data']
     
-    # Metrics
     m1, m2 = st.columns(2)
     with m1:
         st.metric(label=f"{selected_symbol} Spot", value=f"₹ {spot_price:,.2f}")
@@ -166,7 +165,6 @@ if data and 'records' in data:
             df_signals = pd.DataFrame(signals)
             st.table(df_signals)
             
-            # Auto log trade
             entry_timestamp = datetime.now().strftime("%H:%M:%S")
             for sig in signals[:1]:
                 if not any(t['Strike'] == sig['Strike'] and t['Status'] == 'OPEN' for t in st.session_state.trade_history):
@@ -200,7 +198,7 @@ if len(st.session_state.trade_history) > 0:
             for trade in st.session_state.trade_history:
                 if trade['Status'] == 'OPEN':
                     trade['Out'] = exit_timestamp
-                    trade['Status'] = 'CLOSED'
+                    trade['Status'] == 'CLOSED'
                     trade['PnL'] = "Booked"
             st.rerun()
     with b2:
