@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS to set column widths strictly side-by-side
+# Custom CSS for clean mobile layout
 st.markdown("""
     <style>
     .block-container {
@@ -32,8 +32,7 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
     }
-    
-    /* Force columns to stay side-by-side in a single row */
+    /* Force compact horizontal alignment */
     [data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
@@ -66,15 +65,15 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Expiry, Lots (25% each) and Auto-Run in ONE single row using exact column weights
-col1, col2, col3 = st.columns([1.2, 1, 1.2])
-with col1:
+# Expiry, Lots & Auto-Run in a clean aligned row
+c1, c2, c3 = st.columns([1.5, 1, 1.2])
+with c1:
     selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
-with col2:
+with c2:
     lot_multiplier = st.number_input("Lots", min_value=1, max_value=50, value=1, step=1)
-with col3:
-    st.markdown("<div style='height: 5px'></div>", unsafe_allow_html=True)
-    auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
+with c3:
+    st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+    auto_refresh = st.checkbox("🔄 Auto-Run", value=False)
 
 st.markdown("---")
 
