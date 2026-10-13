@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for compact mobile view and side-by-side elements
+# Custom CSS to forcefully keep columns side-by-side on mobile screens
 st.markdown("""
     <style>
     .block-container {
@@ -32,11 +32,15 @@ st.markdown("""
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
     }
-    /* Force side-by-side layout for columns on all screens */
-    div[data-testid="column"] {
-        float: left;
-        flex: 1 1 auto;
-        min-width: 45% !important;
+    /* Force Streamlit horizontal blocks not to stack on mobile */
+    [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+    }
+    [data-testid="column"] {
+        width: 50% !important;
+        flex: 1 1 50% !important;
+        min-width: unset !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -65,7 +69,7 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# Expiry & Lots side-by-side container
+# Expiry and Lots strictly side-by-side in one row (Half-Half)
 c1, c2 = st.columns(2)
 with c1:
     selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
