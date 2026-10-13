@@ -4,48 +4,80 @@ import requests
 import time
 from datetime import datetime
 
-# Page Configuration
+# Page Configuration & Compact Padding
 st.set_page_config(
-    page_title="Zero-Hero Live Tracker & PnL",
+    page_title="Zero-Hero Live Tracker",
     page_icon="📈",
     layout="wide"
 )
 
-# App Header
-st.title("🚀 Zero-Hero Scanner & Live Trade PnL Tracker")
-st.markdown("##### Real-Time ₹3 - ₹5 Strike Tracking • Lot Management & Trade Log")
-st.markdown("---")
+# Custom CSS to reduce unnecessary gaps/padding on mobile screens
+st.markdown("""
+    <style>
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    h1 {
+        font-size: 1.8rem !important;
+        margin-bottom: 0.2rem !important;
+    }
+    p {
+        font-size: 0.9rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    hr {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.8rem !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-# --- INITIALIZE SESSION STATE FOR TRADE HISTORY ---
+# --- TODAY'S EXPIRY DETECTOR BANNER ---
+today_day = datetime.now().strftime("%A")
+expiry_mapping = {
+    "Monday": "🟢 Midcap Nifty Expiry Today!",
+    "Tuesday": "🟢 Fin Nifty Expiry Today!",
+    "Wednesday": "🟢 Bank Nifty Expiry Today!",
+    "Thursday": "🟢 Nifty 50 Expiry Today!",
+    "Friday": "🟢 Sensex Expiry Today!"
+}
+today_expiry_text = expiry_mapping.get(today_day, f"📅 Today is {today_day}")
+
+st.success(f"**{today_expiry_text}** (Sahi index select karke trade karein)")
+
+# App Header (Compact)
+st.title("🚀 Zero-Hero Scanner & PnL")
+st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
+
+# --- INITIALIZE SESSION STATE ---
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS ---
-top_col1, top_col2, top_col3, top_col4 = st.columns(4)
-
-with top_col1:
-    selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
-
-with top_col2:
+# --- TOP CONTROLS (Compact 2x2 grid for mobile view) ---
+c1, c2 = st.columns(2)
+with c1:
+    selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
+with c2:
     selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
 
-with top_col3:
-    # Lot Selector starting from 1
+c3, c4 = st.columns(2)
+with c3:
     lot_multiplier = st.number_input("Select Lots", min_value=1, max_value=50, value=1, step=1)
-
-with top_col4:
-    st.markdown("### ") 
-    auto_refresh = st.checkbox("🔄 Auto-Run Every 2 Sec", value=False)
+with c4:
+    auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
 
 st.markdown("---")
 
-# --- ADVANCED SETTINGS EXPANDER ---
-with st.expander("⚙️ Strategy Settings (Time & Direction)"):
+# --- STRATEGY SETTINGS ---
+with st.expander("⚙️ Advanced Settings (Time & Direction)"):
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        enable_time_filter = st.checkbox("Enable Safe Time Filter (Scan after 9:15 AM onwards)", value=True)
+        enable_time_filter = st.checkbox("Safe Time Filter (After 9:15 AM)", value=True)
     with col_f2:
-        trade_direction = st.selectbox("Allowed Direction", ["BOTH (CE & PE)", "ONLY CALL (CE)", "ONLY PUT (PE)"])
+        trade_direction = st.selectbox("Direction", ["BOTH (CE & PE)", "ONLY CALL (CE)", "ONLY PUT (PE)"])
 
 # --- FETCH DATA FROM NSE ---
 @st.cache_data(ttl=2)
@@ -68,18 +100,16 @@ def fetch_live_data(symbol):
     except Exception:
         return None
 
-# --- TIME CHECK LOGIC ---
+# --- TIME CHECK ---
 current_time = datetime.now().time()
 market_ready = True
-
 if enable_time_filter:
-    # 9:15 AM start check
     market_open_time = datetime.strptime("09:15:00", "%H:%M:%S").time()
     if current_time < market_open_time:
         market_ready = False
 
-# Index Lot Sizes mapping (Approx standard sizes for investment calculation)
-lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25}
+# Lot sizes mapping
+lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 50}
 current_lot_size = lot_sizes.get(selected_symbol, 25) * lot_multiplier
 
 # Fetching Data
@@ -89,49 +119,46 @@ if data and 'records' in data:
     spot_price = data['records']['underlyingValue']
     records = data['records']['data']
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(label=f"{selected_symbol} Live Spot", value=f"₹ {spot_price:,.2f}")
-    with col2:
-        st.metric(label="Active Expiry", value=selected_expiry)
-    with col3:
-        st.metric(label="Total Qty (Lots x Size)", value=f"{current_lot_size} Qty")
+    # Metrics
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric(label=f"{selected_symbol} Spot", value=f"₹ {spot_price:,.2f}")
+    with m2:
+        st.metric(label="Total Qty", value=f"{current_lot_size} Qty")
 
     st.markdown("---")
-    st.subheader(f"🎯 Live Zero-Hero Signals (₹3 - ₹5)")
+    st.subheader("🎯 Active Signals (₹3 - ₹5)")
 
     if not market_ready:
-        st.warning(f"⏳ Market 9:15 AM par shuru hoga (Current Time: {current_time.strftime('%H:%M:%S')}).")
+        st.warning(f"⏳ Market 9:15 AM par shuru hoga (Current: {current_time.strftime('%H:%M:%S')}).")
     else:
         signals = []
         for item in records:
-            # Check Call Option (CE)
             if 'CE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY CALL (CE)"]:
                 ce_ltp = item['CE'].get('lastPrice', 0)
                 ce_strike = item['CE'].get('strikePrice', 0)
                 if 3.0 <= ce_ltp <= 5.0:
                     invest_amt = ce_ltp * current_lot_size
                     signals.append({
-                        "Type": "CALL (CE)",
+                        "Type": "CALL",
                         "Strike": ce_strike,
-                        "Premium (₹)": ce_ltp,
-                        "Total Invest (₹)": round(invest_amt, 2),
-                        "Max Risk": f"₹{250 * lot_multiplier} - ₹{300 * lot_multiplier}",
+                        "Price": ce_ltp,
+                        "Total (₹)": round(invest_amt, 2),
+                        "Risk": f"₹{250 * lot_multiplier}",
                         "Action": "BUY"
                     })
             
-            # Check Put Option (PE)
             if 'PE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY PUT (PE)"]:
                 pe_ltp = item['PE'].get('lastPrice', 0)
                 pe_strike = item['PE'].get('strikePrice', 0)
                 if 3.0 <= pe_ltp <= 5.0:
                     invest_amt = pe_ltp * current_lot_size
                     signals.append({
-                        "Type": "PUT (PE)",
+                        "Type": "PUT",
                         "Strike": pe_strike,
-                        "Premium (₹)": pe_ltp,
-                        "Total Invest (₹)": round(invest_amt, 2),
-                        "Max Risk": f"₹{250 * lot_multiplier} - ₹{300 * lot_multiplier}",
+                        "Price": pe_ltp,
+                        "Total (₹)": round(invest_amt, 2),
+                        "Risk": f"₹{250 * lot_multiplier}",
                         "Action": "BUY"
                     })
 
@@ -139,52 +166,49 @@ if data and 'records' in data:
             df_signals = pd.DataFrame(signals)
             st.table(df_signals)
             
-            # Auto-log live signals into history table for demo/tracking
+            # Auto log trade
             entry_timestamp = datetime.now().strftime("%H:%M:%S")
-            for sig in signals[:1]: # Log top active signal for tracking demo
-                # Avoid duplicate immediate entries
+            for sig in signals[:1]:
                 if not any(t['Strike'] == sig['Strike'] and t['Status'] == 'OPEN' for t in st.session_state.trade_history):
                     st.session_state.trade_history.append({
-                        "Time In": entry_timestamp,
-                        "Time Out": "Running...",
+                        "In": entry_timestamp,
+                        "Out": "-",
                         "Symbol": selected_symbol,
                         "Type": sig['Type'],
                         "Strike": sig['Strike'],
-                        "Entry Price": sig['Premium (₹)'],
-                        "Exit Price": "-",
+                        "Entry": sig['Price'],
                         "Status": "OPEN",
-                        "PnL (₹)": "Live..."
+                        "PnL": "Live..."
                     })
         else:
-            st.info("Is samay ₹3 se ₹5 ki range mein koi option active nahi hai.")
+            st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
 else:
-    st.warning("⚠️ Market closed hai. Live market hours mein data yahin dikhega.")
+    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikhega.")
 
-# --- BOTTOM SECTION: PNL & TRADE HISTORY LOG ---
+# --- PNL & TRADE HISTORY LOG ---
 st.markdown("---")
-st.subheader("📊 Live Trade PnL & History Log")
+st.subheader("📊 Trade History & PnL")
 
 if len(st.session_state.trade_history) > 0:
     df_history = pd.DataFrame(st.session_state.trade_history)
     st.dataframe(df_history, use_container_width=True)
     
-    col_bt1, col_bt2 = st.columns(2)
-    with col_bt1:
-        if st.button("🔴 Close All Open Trades (Book PnL)"):
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("🔴 Close All Trades"):
             exit_timestamp = datetime.now().strftime("%H:%M:%S")
             for trade in st.session_state.trade_history:
                 if trade['Status'] == 'OPEN':
-                    trade['Time Out'] = exit_timestamp
-                    trade['Exit Price'] = trade['Entry Price'] * 1.5 # Simulated target hit
+                    trade['Out'] = exit_timestamp
                     trade['Status'] = 'CLOSED'
-                    trade['PnL (₹)'] = f"+₹{round((1.5 - trade['Entry Price']) * current_lot_size, 2)}"
+                    trade['PnL'] = "Booked"
             st.rerun()
-    with col_bt2:
-        if st.button("🗑️ Clear History"):
+    with b2:
+        if st.button("🗑️ Clear Log"):
             st.session_state.trade_history = []
             st.rerun()
 else:
-    st.info("Abhi koi trade history record nahi hui hai. Market chalu hone par trades yahan log hongi.")
+    st.info("Koi trade log nahi hai.")
 
 # --- AUTO-RUN LOGIC ---
 if auto_refresh:
