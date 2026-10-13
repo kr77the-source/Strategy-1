@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for table layout & compact mobile view
+# Custom CSS to set column widths strictly side-by-side
 st.markdown("""
     <style>
     .block-container {
@@ -31,6 +31,13 @@ st.markdown("""
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
+    }
+    
+    /* Force columns to stay side-by-side in a single row */
+    [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -59,14 +66,15 @@ if 'trade_history' not in st.session_state:
 # --- TOP CONTROLS ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
 
-# --- EXPIRY & LOTS SIDE-BY-SIDE USING STREAMLIT TABLE/COLUMNS ---
-col1, col2 = st.columns(2)
+# Expiry, Lots (25% each) and Auto-Run in ONE single row using exact column weights
+col1, col2, col3 = st.columns([1.2, 1, 1.2])
 with col1:
     selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
 with col2:
     lot_multiplier = st.number_input("Lots", min_value=1, max_value=50, value=1, step=1)
-
-auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
+with col3:
+    st.markdown("<div style='height: 5px'></div>", unsafe_allow_html=True)
+    auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
 
 st.markdown("---")
 
@@ -188,7 +196,7 @@ if len(st.session_state.trade_history) > 0:
             for trade in st.session_state.trade_history:
                 if trade['Status'] == 'OPEN':
                     trade['Out'] = exit_timestamp
-                    trade['Status'] = 'CLOSED'
+                    trade['Status'] == 'CLOSED'
                     trade['PnL'] = "Booked"
             st.rerun()
     with b2:
