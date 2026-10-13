@@ -56,19 +56,16 @@ st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS (Clean Rows & Columns) ---
+# --- TOP CONTROLS (Expiry and Lot Size in one row) ---
+selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
+
 c1, c2 = st.columns(2)
 with c1:
-    selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
-with c2:
     selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
-
-c3, c4 = st.columns(2)
-with c3:
+with c2:
     lot_multiplier = st.number_input("Select Lots", min_value=1, max_value=50, value=1, step=1)
-with c4:
-    st.markdown("### ") 
-    auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
+
+auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
 
 st.markdown("---")
 
@@ -192,7 +189,7 @@ if len(st.session_state.trade_history) > 0:
             for trade in st.session_state.trade_history:
                 if trade['Status'] == 'OPEN':
                     trade['Out'] = exit_timestamp
-                    trade['Status'] == 'CLOSED'
+                    trade['Status'] = 'CLOSED'
                     trade['PnL'] = "Booked"
             st.rerun()
     with b2:
