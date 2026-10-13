@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS with increased top padding to prevent cutting
+# Custom CSS for compact mobile spacing
 st.markdown("""
     <style>
     .block-container {
@@ -46,7 +46,7 @@ expiry_mapping = {
 }
 today_expiry_text = expiry_mapping.get(today_day, f"📅 Today is {today_day}")
 
-st.success(f"**{today_expiry_text}** (Sahi index select karke trade karein)")
+st.success(f"**{today_expiry_text}**")
 
 # App Header
 st.title("🚀 Zero-Hero Scanner & PnL")
@@ -56,7 +56,7 @@ st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS ---
+# --- TOP CONTROLS (Clean Rows & Columns) ---
 c1, c2 = st.columns(2)
 with c1:
     selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
@@ -67,17 +67,10 @@ c3, c4 = st.columns(2)
 with c3:
     lot_multiplier = st.number_input("Select Lots", min_value=1, max_value=50, value=1, step=1)
 with c4:
+    st.markdown("### ") 
     auto_refresh = st.checkbox("🔄 Auto-Run (2s)", value=False)
 
 st.markdown("---")
-
-# --- STRATEGY SETTINGS ---
-with st.expander("⚙️ Advanced Settings (Time & Direction)"):
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        enable_time_filter = st.checkbox("Safe Time Filter (After 9:15 AM)", value=True)
-    with col_f2:
-        trade_direction = st.selectbox("Direction", ["BOTH (CE & PE)", "ONLY CALL (CE)", "ONLY PUT (PE)"])
 
 # --- FETCH DATA FROM NSE ---
 @st.cache_data(ttl=2)
@@ -103,10 +96,9 @@ def fetch_live_data(symbol):
 # --- TIME CHECK ---
 current_time = datetime.now().time()
 market_ready = True
-if enable_time_filter:
-    market_open_time = datetime.strptime("09:15:00", "%H:%M:%S").time()
-    if current_time < market_open_time:
-        market_ready = False
+market_open_time = datetime.strptime("09:15:00", "%H:%M:%S").time()
+if current_time < market_open_time:
+    market_ready = False
 
 # Lot sizes mapping
 lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 50}
@@ -133,7 +125,8 @@ if data and 'records' in data:
     else:
         signals = []
         for item in records:
-            if 'CE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY CALL (CE)"]:
+            # Check Call Option (CE)
+            if 'CE' in item:
                 ce_ltp = item['CE'].get('lastPrice', 0)
                 ce_strike = item['CE'].get('strikePrice', 0)
                 if 3.0 <= ce_ltp <= 5.0:
@@ -147,7 +140,8 @@ if data and 'records' in data:
                         "Action": "BUY"
                     })
             
-            if 'PE' in item and trade_direction in ["BOTH (CE & PE)", "ONLY PUT (PE)"]:
+            # Check Put Option (PE)
+            if 'PE' in item:
                 pe_ltp = item['PE'].get('lastPrice', 0)
                 pe_strike = item['PE'].get('strikePrice', 0)
                 if 3.0 <= pe_ltp <= 5.0:
