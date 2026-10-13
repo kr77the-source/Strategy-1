@@ -81,7 +81,6 @@ def get_live_market_data(symbol, expiry):
 spot, result = get_live_market_data(selected_symbol, selected_expiry)
 
 if spot is not None:
-    # Display Live Metrics
     col1, col2 = st.columns(2)
     with col1:
         st.metric(label=f"{selected_symbol} Live Spot Price", value=f"₹ {spot:,.2f}")
@@ -99,7 +98,7 @@ if spot is not None:
 else:
     st.warning(f"NSE server se data fetch nahi ho paya. (Error: {result}). Agar market band hai, toh live option chain data nahi dikhega.")
 
-# --- AUTO-RUN LOGIC (2 Seconds interval) ---
+# --- AUTO-RUN LOGIC ---
 if auto_refresh:
     time.sleep(2)
     st.rerun()
