@@ -82,8 +82,10 @@ st.markdown("---")
 def fetch_live_data(symbol):
     url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
         "Referer": "https://www.nseindia.com/"
     }
     try:
@@ -98,18 +100,7 @@ def fetch_live_data(symbol):
     except Exception:
         return None
 
-# --- TIME CHECK ---
-current_time = datetime.now().time()
-market_ready = True
-market_open_time = datetime.strptime("09:15:00", "%H:%M:%S").time()
-if current_time < market_open_time:
-    market_ready = False
-
-# Lot sizes mapping
-lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 50}
-current_lot_size = lot_sizes.get(selected_symbol, 25) * lot_multiplier
-
-# Fetching Data
+# Fetching Data directly without rigid time-blocking so live market data flows immediately
 data = fetch_live_data(selected_symbol)
 
 if data and 'records' in data:
@@ -120,65 +111,64 @@ if data and 'records' in data:
     with m1:
         st.metric(label=f"{selected_symbol} Spot", value=f"₹ {spot_price:,.2f}")
     with m2:
+        lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 50}
+        current_lot_size = lot_sizes.get(selected_symbol, 25) * lot_multiplier
         st.metric(label="Total Qty", value=f"{current_lot_size} Qty")
 
     st.markdown("---")
     st.subheader("🎯 Active Signals (₹3 - ₹5)")
 
-    if not market_ready:
-        st.warning(f"⏳ Market 9:15 AM par shuru hoga (Current: {current_time.strftime('%H:%M:%S')}).")
-    else:
-        signals = []
-        for item in records:
-            if 'CE' in item:
-                ce_ltp = item['CE'].get('lastPrice', 0)
-                ce_strike = item['CE'].get('strikePrice', 0)
-                if 3.0 <= ce_ltp <= 5.0:
-                    invest_amt = ce_ltp * current_lot_size
-                    signals.append({
-                        "Type": "CALL",
-                        "Strike": ce_strike,
-                        "Price": ce_ltp,
-                        "Total (₹)": round(invest_amt, 2),
-                        "Risk": f"₹{250 * lot_multiplier}",
-                        "Action": "BUY"
-                    })
-            
-            if 'PE' in item:
-                pe_ltp = item['PE'].get('lastPrice', 0)
-                pe_strike = item['PE'].get('strikePrice', 0)
-                if 3.0 <= pe_ltp <= 5.0:
-                    invest_amt = pe_ltp * current_lot_size
-                    signals.append({
-                        "Type": "PUT",
-                        "Strike": pe_strike,
-                        "Price": pe_ltp,
-                        "Total (₹)": round(invest_amt, 2),
-                        "Risk": f"₹{250 * lot_multiplier}",
-                        "Action": "BUY"
-                    })
+    signals = []
+    for item in records:
+        if 'CE' in item:
+            ce_ltp = item['CE'].get('lastPrice', 0)
+            ce_strike = item['CE'].get('strikePrice', 0)
+            if 3.0 <= ce_ltp <= 5.0:
+                invest_amt = ce_ltp * current_lot_size
+                signals.append({
+                    "Type": "CALL",
+                    "Strike": ce_strike,
+                    "Price": ce_ltp,
+                    "Total (₹)": round(invest_amt, 2),
+                    "Risk": f"₹{250 * lot_multiplier}",
+                    "Action": "BUY"
+                })
+        
+        if 'PE' in item:
+            pe_ltp = item['PE'].get('lastPrice', 0)
+            pe_strike = item['PE'].get('strikePrice', 0)
+            if 3.0 <= pe_ltp <= 5.0:
+                invest_amt = pe_ltp * current_lot_size
+                signals.append({
+                    "Type": "PUT",
+                    "Strike": pe_strike,
+                    "Price": pe_ltp,
+                    "Total (₹)": round(invest_amt, 2),
+                    "Risk": f"₹{250 * lot_multiplier}",
+                    "Action": "BUY"
+                })
 
-        if len(signals) > 0:
-            df_signals = pd.DataFrame(signals)
-            st.table(df_signals)
-            
-            entry_timestamp = datetime.now().strftime("%H:%M:%S")
-            for sig in signals[:1]:
-                if not any(t['Strike'] == sig['Strike'] and t['Status'] == 'OPEN' for t in st.session_state.trade_history):
-                    st.session_state.trade_history.append({
-                        "In": entry_timestamp,
-                        "Out": "-",
-                        "Symbol": selected_symbol,
-                        "Type": sig['Type'],
-                        "Strike": sig['Strike'],
-                        "Entry": sig['Price'],
-                        "Status": "OPEN",
-                        "PnL": "Live..."
-                    })
-        else:
-            st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
+    if len(signals) > 0:
+        df_signals = pd.DataFrame(signals)
+        st.table(df_signals)
+        
+        entry_timestamp = datetime.now().strftime("%H:%M:%S")
+        for sig in signals[:1]:
+            if not any(t['Strike'] == sig['Strike'] and t['Status'] == 'OPEN' for t in st.session_state.trade_history):
+                st.session_state.trade_history.append({
+                    "In": entry_timestamp,
+                    "Out": "-",
+                    "Symbol": selected_symbol,
+                    "Type": sig['Type'],
+                    "Strike": sig['Strike'],
+                    "Entry": sig['Price'],
+                    "Status": "OPEN",
+                    "PnL": "Live..."
+                })
+    else:
+        st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
 else:
-    st.warning("⚠️ Market closed hai. Live hours mein data yahan dikhega.")
+    st.warning("⚠️ NSE Data Fetching... (Agar market open hai toh thodi der mein data aa jayega)")
 
 # --- PNL & TRADE HISTORY LOG ---
 st.markdown("---")
