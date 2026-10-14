@@ -15,65 +15,27 @@ st.set_page_config(
 st.markdown("""
     <style>
     .block-container {
-        padding-top: 3.5rem;
+        padding-top: 1.5rem;
         padding-bottom: 1rem;
         padding-left: 1rem;
         padding-right: 1rem;
-    }
-    h1 {
-        font-size: 1.8rem !important;
-        margin-bottom: 0.2rem !important;
-    }
-    p {
-        font-size: 0.9rem !important;
-        margin-bottom: 0.5rem !important;
     }
     hr {
         margin-top: 0.5rem !important;
         margin-bottom: 0.8rem !important;
     }
-    /* Force compact horizontal alignment */
-    [data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-    }
     </style>
 """, unsafe_allow_html=True)
-
-# --- TODAY'S EXPIRY DETECTOR BANNER ---
-today_day = datetime.now().strftime("%A")
-expiry_mapping = {
-    "Monday": "🟢 Midcap Nifty Expiry Today!",
-    "Tuesday": "🟢 Fin Nifty Expiry Today!",
-    "Wednesday": "🟢 Bank Nifty Expiry Today!",
-    "Thursday": "🟢 Nifty 50 Expiry Today!",
-    "Friday": "🟢 Sensex Expiry Today!"
-}
-today_expiry_text = expiry_mapping.get(today_day, f"📅 Today is {today_day}")
-
-st.success(f"**{today_expiry_text}**")
-
-# App Header
-st.title("🚀 Zero-Hero Scanner & PnL")
-st.markdown("Real-Time ₹3 - ₹5 Strike Tracking & Lot Log")
 
 # --- INITIALIZE SESSION STATE ---
 if 'trade_history' not in st.session_state:
     st.session_state.trade_history = []
 
-# --- TOP CONTROLS ---
+# --- TOP CONTROLS (Normal Vertical Layout) ---
 selected_symbol = st.selectbox("Select Index", ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"])
-
-# Expiry, Lots & Auto-Run in a clean aligned row
-c1, c2, c3 = st.columns([1.5, 1, 1.2])
-with c1:
-    selected_expiry = st.selectbox("Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
-with c2:
-    lot_multiplier = st.number_input("Lots", min_value=1, max_value=50, value=1, step=1)
-with c3:
-    st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
-    auto_refresh = st.checkbox("🔄 Auto-Run", value=False)
+selected_expiry = st.selectbox("Select Expiry", ["Current Weekly", "Next Weekly", "Monthly"])
+lot_multiplier = st.number_input("Select Lots", min_value=1, max_value=50, value=1, step=1)
+auto_refresh = st.checkbox("🔄 Auto-Run", value=False)
 
 st.markdown("---")
 
@@ -100,7 +62,6 @@ def fetch_live_data(symbol):
     except Exception:
         return None
 
-# Fetching Data directly without rigid time-blocking so live market data flows immediately
 data = fetch_live_data(selected_symbol)
 
 if data and 'records' in data:
@@ -167,8 +128,6 @@ if data and 'records' in data:
                 })
     else:
         st.info("Is samay ₹3 - ₹5 range mein koi option active nahi hai.")
-else:
-    st.warning("⚠️ NSE Data Fetching... (Agar market open hai toh thodi der mein data aa jayega)")
 
 # --- PNL & TRADE HISTORY LOG ---
 st.markdown("---")
